@@ -5,8 +5,14 @@ use tokio::{net::TcpListener, signal};
 use tracing::info;
 
 
-use crate::server::{ health::health, ws::ws_handler };
+use crate::{auth::Auth, server::{ health::health, ws::ws_handler }};
+use crate::connection::ConnectionRegistry;
 
+#[derive(Clone)]
+pub struct AppState {
+    pub auth: Auth,
+    pub registry: ConnectionRegistry,
+}
 
 async fn shutdown_signal() {
     signal::ctrl_c()
@@ -16,10 +22,15 @@ async fn shutdown_signal() {
     info!("Shutdown signal received");
 }
 
-pub async fn run() {
+pub async fn run(jwt_secret: String) {
+    let app_state = AppState {
+        auth: Auth::new(&jwt_secret),
+        registry: ConnectionRegistry::new(),
+    };
     let router = Router::new()
     .route("/health", get(health))
-    .route("/ws", get(ws_handler));
+    .route("/ws", get(ws_handler))
+    .with_state(app_state);
 
     let addr = SocketAddr::from(([0,0,0,0], 8080));
 
