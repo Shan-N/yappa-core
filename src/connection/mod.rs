@@ -1,11 +1,10 @@
 use std::sync::Arc;
-use dashmap::DashMap;
+use dashmap::{DashMap, DashSet};
 use axum::extract::ws::Message;
-// use serde::de;
 use tokio::sync::mpsc;
 use uuid::Uuid;
 
-use crate::{auth::Identity};
+use crate::auth::Identity;
 
 
 pub type ConnectionId = Uuid;
@@ -16,27 +15,50 @@ pub type SocketSender = mpsc::UnboundedSender<Message>;
 pub struct ConnectionRegistry {
     // tenant_id -> user_id -> connection_id -> sender
     inner: Arc<DashMap<String, DashMap<String, DashMap<ConnectionId, SocketSender>>>>,
+    // tenant_id -> group_id -> set of user_ids
+    groups: Arc<DashMap<String, DashMap<String, DashSet<String>>>>,
 }
 
 impl ConnectionRegistry {
     pub fn new() -> Self {
         Self {
             inner: Arc::new(DashMap::new()),
+            groups: Arc::new(DashMap::new()),
         }
     }
-    pub fn insert (
+
+    pub fn insert(
         &self,
         identity: &Identity,
         connection_id: ConnectionId,
         sender: SocketSender,
     ) {
-       self.inner
+        self.inner
             .entry(identity.tenant_id.clone())
             .or_default()
-            .entry(identity.user_id.clone()) // For simplicity, using "global" as channel_id
+            .entry(identity.user_id.clone())
             .or_default()
-            .insert(connection_id, sender); 
+            .insert(connection_id, sender);
         tracing::info!("Registered connection: tenant_id={}, user_id={}", identity.tenant_id, identity.user_id);
+    }
+
+    pub fn join_group(&self, tenant_id: &str, group_id: &str, user_id: &str) {
+        self.groups
+            .entry(tenant_id.to_string())
+            .or_default()
+            .entry(group_id.to_string())
+            .or_default()
+            .insert(user_id.to_string());
+        tracing::info!("User {} joined group {} in tenant {}", user_id, group_id, tenant_id);
+    }
+
+    pub fn leave_group(&self, tenant_id: &str, group_id: &str, user_id: &str) {
+        if let Some(tenant_groups) = self.groups.get(tenant_id) {
+            if let Some(members) = tenant_groups.get(group_id) {
+                members.remove(user_id);
+                tracing::info!("User {} left group {} in tenant {}", user_id, group_id, tenant_id);
+            }
+        }
     }
     pub fn remove(
         &self, 
@@ -67,6 +89,24 @@ impl ConnectionRegistry {
                     }
                 }
             }
+        }
+    }
+
+    pub fn send_msg_to_group(&self, tenant_id: &str, group_id: &str, msg: Message) {
+        // Get the list of users in the group to avoid holding lock during sends
+        let user_ids: Vec<String> = if let Some(tenant_groups) = self.groups.get(tenant_id) {
+            if let Some(members) = tenant_groups.get(group_id) {
+                members.iter().map(|id| id.clone()).collect()
+            } else {
+                return;
+            }
+        } else {
+            return;
+        };
+
+        // Send message to each user in the group
+        for user_id in user_ids {
+            self.send_msg_to_user(tenant_id, &user_id, msg.clone());
         }
     }
 }

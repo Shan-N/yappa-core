@@ -1,17 +1,19 @@
-use std::net::SocketAddr;
+use std::{net::SocketAddr, sync::Arc};
 
 use axum::{Router, { routing::get }};
 use tokio::{net::TcpListener, signal};
 use tracing::info;
 
 
-use crate::{auth::Auth, server::{ health::health, ws::ws_handler }};
+use crate::{auth::Auth, redis::RedisManager, server::{ health::health, ws::ws_handler }};
 use crate::connection::ConnectionRegistry;
 
 #[derive(Clone)]
 pub struct AppState {
     pub auth: Auth,
     pub registry: ConnectionRegistry,
+    // pub producer: FutureProducer
+    pub pubsub: Arc<RedisManager>,
 }
 
 async fn shutdown_signal() {
@@ -22,11 +24,19 @@ async fn shutdown_signal() {
     info!("Shutdown signal received");
 }
 
-pub async fn run(jwt_secret: String) {
+pub async fn run(jwt_secret: String, redis_url: String) {
     let app_state = AppState {
         auth: Auth::new(&jwt_secret),
         registry: ConnectionRegistry::new(),
+        pubsub: Arc::new(RedisManager::new(&redis_url)),
     };
+    let pubsub_clone = app_state.pubsub.clone();
+    let registry_clone = app_state.registry.clone();
+    tokio::spawn(async move {
+        if let Err(e) = pubsub_clone.listener(registry_clone).await {
+            eprintln!("Error in Redis listener: {}", e);
+        }
+    });
     let router = Router::new()
     .route("/health", get(health))
     .route("/ws", get(ws_handler))
