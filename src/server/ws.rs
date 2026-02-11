@@ -81,6 +81,7 @@ async fn handle_socket(socket: WebSocket, identity: Identity, app_state: AppStat
                             channel_type: payload.channel_type.clone(),
                             channel_id: payload.user_id.clone(),
                             sender_id: identity_clone.user_id.clone(),
+                            conversation_id: Uuid::new_v4(),
                             timestamp: std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs(),
                             payload: MessagePayload {
                                 text: payload.content.clone(),
@@ -90,6 +91,13 @@ async fn handle_socket(socket: WebSocket, identity: Identity, app_state: AppStat
                         info!("Received message to user {}: {}", payload.user_id, payload.content);
 
                         let _ = state_clone.pubsub.publish(&payload.user_id, &server_msg).await;
+
+                        // Produce to Kafka for DB persistence
+                        if let Ok(kafka_payload) = serde_json::to_vec(&server_msg) {
+                            if let Err(e) = state_clone.kafka.produce("messages", &server_msg.channel_id, &kafka_payload).await {
+                                tracing::error!("Kafka produce failed: {}", e);
+                            }
+                        }
                             },
                             ChannelType::Group | ChannelType::Community => {
                                 let server_msg = ServerMessage {
@@ -100,6 +108,7 @@ async fn handle_socket(socket: WebSocket, identity: Identity, app_state: AppStat
                                     channel_id: payload.user_id.clone(), // here user_id is actually group_id
                                     sender_id: identity_clone.user_id.clone(),
                                     timestamp: std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs(),
+                                    conversation_id: Uuid::new_v4(),
                                     payload: MessagePayload {
                                         text: payload.content.clone(),
                                         meta: serde_json::json!({}),
@@ -107,6 +116,13 @@ async fn handle_socket(socket: WebSocket, identity: Identity, app_state: AppStat
                                 };
                                 info!("Received message to group {}: {}", payload.user_id, payload.content);
                                 let _ = state_clone.pubsub.publish_grp(&payload.user_id, &server_msg).await;
+
+                                // Produce to Kafka for DB persistence
+                                if let Ok(kafka_payload) = serde_json::to_vec(&server_msg) {
+                                    if let Err(e) = state_clone.kafka.produce("messages", &server_msg.channel_id, &kafka_payload).await {
+                                        tracing::error!("Kafka produce failed: {}", e);
+                                    }
+                                }
                             }
                         }
 

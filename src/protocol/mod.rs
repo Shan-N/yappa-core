@@ -34,6 +34,7 @@ pub struct ServerMessage {
     pub channel_id: String,
     pub sender_id: String,
     pub timestamp: u64,
+    pub conversation_id: Uuid,
     pub payload: MessagePayload,
 }
 
