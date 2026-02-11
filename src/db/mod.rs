@@ -15,8 +15,8 @@ impl MessageBatcher {
     pub fn new(pool: PgPool) -> Self {
         Self {
             pool,
-            buffer: Vec::with_capacity(2),
-            capacity: 2,
+            buffer: Vec::with_capacity(1000),
+            capacity: 1000,
         }
     }
 
@@ -66,7 +66,7 @@ impl MessageBatcher {
             .bind(&channel_id[..])
             .bind(&senders[..])
             .bind(&contents[..])
-            .bind(&times.iter().map(|ts| DateTime::<Utc>::from_utc(chrono::NaiveDateTime::from_timestamp(*ts as i64, 0), Utc)).collect::<Vec<_>>()[..])
+            .bind(&times.iter().map(|ts| DateTime::<Utc>::from_timestamp(*ts as i64, 0).unwrap_or_default()).collect::<Vec<_>>()[..])
             .execute(&self.pool)
             .await
         {

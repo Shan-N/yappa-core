@@ -1,6 +1,7 @@
-use redis::Client;
+use redis::{aio::MultiplexedConnection, Client};
 use futures::StreamExt;
 use axum::extract::ws::Message;
+use tokio::sync::OnceCell;
 
 use crate::{connection::ConnectionRegistry, protocol::{ChannelType, ServerMessage}};
 
@@ -8,15 +9,28 @@ use crate::{connection::ConnectionRegistry, protocol::{ChannelType, ServerMessag
 
 pub struct RedisManager {
     client: Client,
+    /// Cached multiplexed connection – reused across all publish calls.
+    conn: OnceCell<MultiplexedConnection>,
 }
 
 impl RedisManager {
     pub fn new(redis_url: &str) -> Self {
-        Self { client: Client::open(redis_url).expect("Invalid Redis URL") }
+        Self {
+            client: Client::open(redis_url).expect("Invalid Redis URL"),
+            conn: OnceCell::new(),
+        }
+    }
+
+    /// Get (or lazily create) the shared multiplexed connection.
+    async fn conn(&self) -> anyhow::Result<MultiplexedConnection> {
+        let c = self.conn
+            .get_or_try_init(|| self.client.get_multiplexed_async_connection())
+            .await?;
+        Ok(c.clone()) // MultiplexedConnection is cheaply cloneable
     }
 
     pub async fn publish(&self, user_id: &str, msg: &ServerMessage) -> anyhow::Result<()> {
-        let mut conn = self.client.get_multiplexed_async_connection().await?;
+        let mut conn = self.conn().await?;
         let channel = format!("user:{}:{}", msg.tenant_id, user_id);
         let payload = serde_json::to_string(msg)?;
         redis::cmd("PUBLISH").arg(&channel).arg(&payload).query_async::<()>(&mut conn).await?;
@@ -24,7 +38,7 @@ impl RedisManager {
     }
 
     pub async fn publish_grp(&self, group_id: &str, msg: &ServerMessage) -> anyhow::Result<()> {
-        let mut conn = self.client.get_multiplexed_async_connection().await?;
+        let mut conn = self.conn().await?;
         let channel = format!("group:{}", group_id);
         let payload = serde_json::to_string(msg)?;
         redis::cmd("PUBLISH").arg(&channel).arg(&payload).query_async::<()>(&mut conn).await?;

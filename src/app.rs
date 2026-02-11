@@ -68,5 +68,9 @@ pub async fn run(jwt_secret: String, redis_url: String, kafka_brokers: String, d
         }
     };
     let _ = axum::serve(listener, router).with_graceful_shutdown(shutdown_signal()).await;
+
+    // Flush remaining Kafka consumer buffer and commit offsets
+    kafka.shutdown();
+    info!("Server shut down cleanly");
 }
 

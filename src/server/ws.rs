@@ -63,12 +63,13 @@ async fn handle_socket(socket: WebSocket, identity: Identity, app_state: AppStat
             match msg {
                 Message::Text(text) => {
                     if let Ok(group_state) = serde_json::from_str::<GroupMessage>(&text) {
+                        // Use authenticated identity instead of client-supplied tenant_id/user_id
                         match group_state.msg_type {
                             GroupMessageType::Join => {
-                                state_clone.registry.join_group(&group_state.tenant_id, &group_state.group_id, &group_state.user_id);
+                                state_clone.registry.join_group(&identity_clone.tenant_id, &group_state.group_id, &identity_clone.user_id);
                             }
                             GroupMessageType::Leave => {
-                                state_clone.registry.leave_group(&group_state.tenant_id, &group_state.group_id, &group_state.user_id);
+                                state_clone.registry.leave_group(&identity_clone.tenant_id, &group_state.group_id, &identity_clone.user_id);
                             }
                         }
                     } else if let Ok(payload) = serde_json::from_str::<WsMessage>(&text) {
@@ -141,12 +142,11 @@ async fn handle_socket(socket: WebSocket, identity: Identity, app_state: AppStat
     });
 
     tokio::select! {
-        _ = (&mut send_task) => {},
-        _ = (&mut recv_task) => {},
+        _ = (&mut send_task) => { recv_task.abort(); },
+        _ = (&mut recv_task) => { send_task.abort(); },
     }
 
-    info!("WebSocket Established");
-    info!("Client Identity: {:?}", identity);
+    info!("WebSocket disconnected: {:?}", identity);
     app_state.registry.remove(&identity, &connection_id);
 
 }

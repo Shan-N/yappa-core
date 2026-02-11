@@ -2,6 +2,9 @@
 
 A high-performance **multi-tenant real-time WebSocket messaging server** built in Rust. Supports direct messages, group chats, and community channels with cross-instance delivery via Redis Pub/Sub and durable persistence through Kafka → PostgreSQL.
 
+## Benchmark
+![Image](./lol.png)
+
 ## Architecture
 
 ```
