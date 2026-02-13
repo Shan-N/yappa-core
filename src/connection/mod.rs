@@ -84,22 +84,34 @@ impl ConnectionRegistry {
         identity: &Identity, 
         connection_id: &ConnectionId,
     ) {
-        if let Some(users) = self.inner.get_mut(&identity.tenant_id) {
-            if let Some(connections) = users.get_mut(&identity.user_id) {
+        let should_remove_user;
+        let should_remove_tenant;
+
+        if let Some(users) = self.inner.get(&identity.tenant_id) {
+            if let Some(connections) = users.get(&identity.user_id) {
                 connections.remove(connection_id);
-                if connections.is_empty() {
-                    users.remove(&identity.user_id);
-                }
-                if users.is_empty() {
-                    self.inner.remove(&identity.tenant_id);
-                }
-                tracing::info!("Removed connection: tenant_id={}, user_id={}", identity.tenant_id, identity.user_id);
+                should_remove_user = connections.is_empty();
+            } else {
+                return;
             }
-        } 
+            // Drop `connections` guard before mutating `users`
+            if should_remove_user {
+                users.remove(&identity.user_id);
+            }
+            should_remove_tenant = users.is_empty();
+        } else {
+            return;
+        }
+        // Drop `users` guard before mutating `self.inner`
+        if should_remove_tenant {
+            self.inner.remove(&identity.tenant_id);
+        }
+        tracing::info!("Removed connection: tenant_id={}, user_id={}", identity.tenant_id, identity.user_id);
     }
 
     pub fn send_msg_to_user(&self, tenant_id: &str, user_id: &str, msg: Message) {
         if let Some(users) = self.inner.get(tenant_id) {
+            let should_remove_user;
             if let Some(connections) = users.get(user_id) {
                 let mut stale: Vec<ConnectionId> = Vec::new();
                 for entry in connections.iter() {
@@ -121,9 +133,13 @@ impl ConnectionRegistry {
                     connections.remove(&conn_id);
                     tracing::info!("Evicted stale connection: tenant_id={}, user_id={}, conn_id={}", tenant_id, user_id, conn_id);
                 }
-                if connections.is_empty() {
-                    users.remove(user_id);
-                }
+                should_remove_user = connections.is_empty();
+            } else {
+                return;
+            }
+            // Drop `connections` guard before mutating `users`
+            if should_remove_user {
+                users.remove(user_id);
             }
         }
     }

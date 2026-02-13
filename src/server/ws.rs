@@ -1,4 +1,4 @@
-use axum::{extract::{State, WebSocketUpgrade, ws::{Message, WebSocket}}, http::{HeaderMap, StatusCode, header}, response::{ IntoResponse, Response }};
+use axum::{extract::{State, WebSocketUpgrade, ws::{Message, WebSocket}}, http::{HeaderMap, StatusCode, Uri, header}, response::{ IntoResponse, Response }};
 use tracing::{ error,info, warn }; 
 use uuid::Uuid;
 use futures::{sink::SinkExt ,stream::StreamExt };
@@ -38,10 +38,19 @@ impl Drop for ConnectionGuard {
     }
 }
 
-pub async fn ws_handler(ws: WebSocketUpgrade, headers: HeaderMap, State(app_state): State<AppState>) -> Response {
+pub async fn ws_handler(ws: WebSocketUpgrade, headers: HeaderMap, State(app_state): State<AppState>, uri: Uri) -> Response {
     let auth_header = headers.get(header::AUTHORIZATION).and_then(|h| h.to_str().ok());
+    let query = uri.query().unwrap_or("");
+    let query_params = query.split('&').filter_map(|kv| {
+        let mut parts = kv.splitn(2, '=');
+        Some((parts.next()?, parts.next()?))
+    }).collect::<std::collections::HashMap<_, _>>();
 
-    let token = match auth_header.and_then(|h| h.strip_prefix("Bearer ")) {
+    let token = auth_header
+        .and_then(|h| h.strip_prefix("Bearer "))
+        .or_else(|| query_params.get("token").map(|s| *s));
+
+    let token = match token {
         Some(t) => t,
         None => {
             warn!("Missing or invalid Authorization header");
@@ -133,6 +142,7 @@ async fn handle_socket(socket: WebSocket, identity: Identity, app_state: AppStat
                 _ = heartbeat_interval.tick() => {
                     if last_activity.elapsed() > HEARTBEAT_TIMEOUT {
                         warn!("Connection timed out (no pong): user_id={}", identity_clone.user_id);
+                        state_clone.registry.remove(&identity_clone, &connection_id);
                         break;
                     }
                     state_clone.registry.send_msg_to_user(
@@ -158,6 +168,23 @@ async fn handle_text_message(text: &str, identity: &Identity, state: &AppState) 
         match group_state.msg_type {
             GroupMessageType::Join => {
                 state.registry.join_group(&identity.tenant_id, &group_state.group_id, &identity.user_id);
+                let server_msg = ServerMessage {
+                    msg_type: "group_join".to_string(),
+                    message_id: Uuid::new_v4(),
+                    tenant_id: identity.tenant_id.clone(),
+                    channel_id: group_state.group_id.clone(),
+                    channel_type: ChannelType::Group,
+                    sender_id: identity.user_id.clone(),
+                    timestamp: std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs(),
+                    conversation_id: group_state.group_id.parse::<Uuid>().unwrap_or_else(|_| Uuid::new_v4()), 
+                    payload: MessagePayload {
+                        text: format!("{} has joined the group", identity.user_id),
+                        meta: serde_json::json!({}),
+                    },
+                };
+                if let Err(e) = state.pubsub.publish_grp(&group_state.group_id, &server_msg).await {
+                    tracing::error!("Redis publish failed: {}", e);
+                }
             }
             GroupMessageType::Leave => {
                 state.registry.leave_group(&identity.tenant_id, &group_state.group_id, &identity.user_id);
@@ -196,11 +223,7 @@ async fn handle_text_message(text: &str, identity: &Identity, state: &AppState) 
                 if let Err(e) = state.pubsub.publish(&payload.user_id, &server_msg).await {
                     tracing::error!("Redis publish failed: {}", e);
                 }
-                if let Err(e) = state.pubsub.publish(&identity.user_id, &server_msg).await {
-                    tracing::error!("Redis publish failed: {}", e);
-                }
 
-                // Produce to Kafka for DB persistence
                 if let Ok(kafka_payload) = serde_json::to_vec(&server_msg) {
                     if let Err(e) = state.kafka.produce("messages", &server_msg.channel_id, &kafka_payload).await {
                         tracing::error!("Kafka produce failed: {}", e);

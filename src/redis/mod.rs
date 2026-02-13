@@ -48,6 +48,12 @@ impl RedisManager {
                 let json_str = serde_json::to_string(&server_msg).unwrap_or_default();
                 let ws_msg = Message::Text(json_str.into());
 
+                if server_msg.msg_type == "group_join" {
+                    registry.join_group(&server_msg.tenant_id, &server_msg.channel_id, &server_msg.sender_id);
+                    registry.send_msg_to_group(&server_msg.tenant_id, &server_msg.channel_id, ws_msg.clone());
+                    continue;
+                }
+
                 match server_msg.channel_type {
                     ChannelType::Dm => {
                         // For DMs, channel_id is the recipient user_id
@@ -55,12 +61,6 @@ impl RedisManager {
                             &server_msg.tenant_id,
                             &server_msg.channel_id,
                             ws_msg.clone(),
-                        );
-                        // Also send to sender so they see their own message
-                        registry.send_msg_to_user(
-                            &server_msg.tenant_id,
-                            &server_msg.sender_id,
-                            ws_msg,
                         );
                     }
                     ChannelType::Group | ChannelType::Community => {

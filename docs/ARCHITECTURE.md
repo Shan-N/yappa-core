@@ -1,254 +1,245 @@
-# Architecture Deep Dive
+# Architecture
 
-## System Overview
+## Overview
 
-realtime-ws is a **stateless WebSocket server** designed for multi-tenant real-time messaging. Each server instance holds ephemeral connection state in memory and relies on Redis Pub/Sub for cross-instance message delivery and Kafka + PostgreSQL for durable persistence.
+realtime-ws is a multi-tenant WebSocket server. A client opens a single WS connection, authenticates with a JWT, and can then send/receive DMs, group messages, and community broadcasts. Cross-node delivery uses Redis Pub/Sub. Durable storage goes through Kafka into PostgreSQL.
 
----
+## Startup sequence
 
-## Component Breakdown
+`main.rs` loads env vars, `app::run()` does the rest:
 
-### 1. Entry Point (`main.rs`)
+1. Connect to Postgres (`PgPoolOptions`, max 5 conns), run migrations via `include_str!`
+2. Create `Kafka` handle (wraps a `FutureProducer` + `StreamConsumer`)
+3. Create `RedisManager` with a `ConnectionManager` for publishing and a raw client for subscribing
+4. Build `AppState` — holds `Auth`, `ConnectionRegistry`, `Kafka`, `Arc<RedisManager>`
+5. Spawn Redis listener task (`pubsub.listener()`) — blocks on `on_message()` stream
+6. Spawn Kafka consumer task (`kafka.spawn_consumer()`) — runs the batch loop
+7. Bind Axum router (`/health`, `/ws`) with CORS layer, listen on `0.0.0.0:{PORT}`
+8. Await graceful shutdown (SIGTERM or Ctrl+C), then `kafka.shutdown()` to flush remaining buffer
 
-Loads environment variables from `.env`, initializes the `tracing` subscriber for structured logging, and delegates to `app::run()` with the four required config values.
-
-### 2. Application Layer (`app.rs`)
-
-**`AppState`** is the shared state passed to every Axum handler:
-
-| Field      | Type                   | Purpose                                      |
-|------------|------------------------|----------------------------------------------|
-| `auth`     | `Auth`                 | JWT validation (Arc-wrapped, clone-cheap)     |
-| `registry` | `ConnectionRegistry`   | In-memory connection + group tracking         |
-| `kafka`    | `Kafka`                | Producer + consumer handle                    |
-| `pubsub`   | `Arc<RedisManager>`    | Redis publish + subscribe                     |
-
-**Startup sequence:**
-
-1. Connect to PostgreSQL (`sqlx::PgPool`)
-2. Run SQL migrations (idempotent `CREATE TABLE IF NOT EXISTS`)
-3. Initialize Kafka (producer + consumer) with the PgPool
-4. Build `AppState`
-5. Spawn Redis Pub/Sub listener as a background task
-6. Spawn Kafka consumer as a background task
-7. Bind Axum router to `0.0.0.0:8080`
-8. Serve with graceful shutdown on CTRL+C
-
-### 3. Authentication (`auth/`)
+## Connection lifecycle
 
 ```
-auth/
-├── mod.rs      Auth struct wrapping AuthConfig in Arc
-├── jwt.rs      AuthConfig — HS256 decoding key + validation
-└── claims.rs   Claims struct (tenant_id, user_id, exp)
+Client                           Server
+  │                                │
+  ├── GET /ws + Bearer JWT ───────▶│ ws_handler()
+  │                                │   ├── extract token from Authorization header or ?token= query
+  │                                │   ├── auth.authenticate(token) → Identity{tenant_id, user_id}
+  │                                │   └── ws.on_upgrade() → handle_socket()
+  │                                │
+  │◀── WS Upgrade ────────────────│
+  │                                │   handle_socket():
+  │                                │     ├── socket.split() → (sender, receiver)
+  │                                │     ├── mpsc::channel(256) → (tx, rx)
+  │                                │     ├── registry.insert(identity, conn_id, tx)
+  │                                │     ├── ConnectionGuard created (RAII cleanup on drop)
+  │                                │     ├── spawn send_task: rx.recv() → sender.send() with 5s timeout
+  │                                │     └── spawn recv_task: select! { message | heartbeat_tick }
+  │                                │
+  │◀── Ping (every 15s) ─────────│
+  ├── Pong ──────────────────────▶│   resets last_activity
+  │                                │
+  │  (if no activity for 30s)      │   → timeout, remove from registry, break
+  │                                │
+  ├── Close frame ───────────────▶│   → break recv loop
+  │                                │
+  │  (either task ends)            │   → select! aborts the other task
+  │                                │   → ConnectionGuard dropped → registry.remove()
 ```
 
-- **Algorithm:** HS256 (HMAC-SHA256)
-- **Required claims:** `tenant_id`, `user_id`, `exp`
-- **Output:** `Identity { tenant_id, user_id }` (used for connection scoping)
-- **Where:** Validated during HTTP upgrade, before the WebSocket is established
+## ConnectionRegistry
 
-### 4. Connection Registry (`connection/mod.rs`)
-
-A lock-free, concurrent in-memory data structure using `DashMap`:
+The core in-memory data structure. Two nested `DashMap` trees, both wrapped in `Arc` so the registry is `Clone`:
 
 ```
-Connections:  tenant_id → user_id → connection_id → mpsc::UnboundedSender<Message>
-Groups:       tenant_id → group_id → DashSet<user_id>
+inner: DashMap<tenant_id, DashMap<user_id, DashMap<connection_id, mpsc::Sender>>>
+
+groups: DashMap<tenant_id, DashMap<group_id, DashSet<user_id>>>
 ```
 
-**Key operations:**
+One user can have multiple connections (different devices). Each connection gets its own `mpsc::Sender<Message>` with a bounded channel of 256. A user is identified by `(tenant_id, user_id)`, a connection by a random `Uuid`.
 
-| Method              | Complexity | Description                                       |
-|---------------------|------------|---------------------------------------------------|
-| `insert()`          | O(1)       | Register a new WebSocket connection               |
-| `remove()`          | O(1)       | Unregister on disconnect, clean up empty maps     |
-| `join_group()`      | O(1)       | Add user to a tenant-scoped group                 |
-| `leave_group()`     | O(1)       | Remove user from a group                          |
-| `send_msg_to_user()`| O(k)       | Send to all k connections of a user               |
-| `send_msg_to_group()`| O(n×k)   | Fan-out to n members × k connections each         |
+### Key operations
 
-**Design notes:**
-- Each WebSocket connection gets a unique UUID (`ConnectionId`)
-- A single user can have multiple concurrent connections (multi-device)
-- Group membership is per-tenant, in-memory only (lost on restart)
+- **insert** — adds `(conn_id, sender)` under the user's map, creating tenant/user levels as needed
+- **remove** — removes the connection, then garbage-collects empty user and tenant maps (careful to drop DashMap guards before mutating parents to avoid deadlock)
+- **send_msg_to_user** — iterates all connections for a user, `try_send()` on each. If a channel is full or closed, the connection is marked stale and evicted after iteration (not during, to avoid deadlock on DashMap)
+- **send_msg_to_group** — collects user IDs from the group's `DashSet`, then calls `send_msg_to_user` for each
+- **join/leave/create/delete_group** — manipulate the `groups` DashMap
 
-### 5. WebSocket Handler (`server/ws.rs`)
+### Concurrency notes
 
-The handler lifecycle:
+DashMap is sharded internally (lock-free reads, per-shard write locks). The code is careful about guard lifetimes — it checks `should_remove_user` / `should_remove_tenant` flags and drops inner guards before mutating outer maps. Stale connections are collected into a `Vec` during iteration and removed afterward to avoid holding a read guard while calling `remove()`.
 
-1. **Upgrade:** Extract Bearer token → validate JWT → upgrade to WebSocket
-2. **Setup:** Split socket into sender/receiver halves, create unbounded mpsc channel, register in registry
-3. **Send task:** Spawned tokio task that drains the mpsc channel → writes to WebSocket
-4. **Recv task:** Spawned tokio task that reads WebSocket → parses JSON → routes:
-   - `GroupMessage` → join/leave via registry
-   - `WsMessage` → construct `ServerMessage` → publish to Redis + produce to Kafka
-5. **Teardown:** When either task exits (client disconnect or error), remove from registry
+## Message routing
 
-### 6. Redis Pub/Sub (`redis/mod.rs`)
+When `handle_text_message` receives JSON, it tries to parse as `GroupMessage` first (has `msg_type` field), then as `WsMessage` (has `channel_type` field). This ordering matters — a message that could parse as both will be treated as a group command.
 
-**Publishing:**
+### DM flow
 
-| Method          | Redis Channel                    | Used For         |
-|-----------------|----------------------------------|------------------|
-| `publish()`     | `user:{tenant_id}:{user_id}`    | DMs              |
-| `publish_grp()` | `group:{group_id}`              | Groups/Community |
+```
+sender client
+    │
+    ├── WsMessage { channel_type: DM, user_id: "recipient", content: "..." }
+    │
+    ▼
+handle_text_message()
+    ├── build ServerMessage with:
+    │     message_id: random UUID
+    │     conversation_id: SHA-256(sorted(sender, recipient))[0..16] as UUID
+    │     channel_id: recipient user_id
+    │     sender_id: sender user_id
+    │     timestamp: SystemTime::now() as unix secs
+    │
+    ├── pubsub.publish() → Redis channel "user:{tenant}:{recipient}"
+    │
+    └── kafka.produce("messages", channel_id, json bytes)
+```
 
-**Listener (single background task):**
+### Group/Community flow
 
-- Pattern-subscribes to `user:*:*` and `group:*`
-- Deserializes `ServerMessage` from each Redis message
-- DM: delivers to recipient + echoes to sender via registry
-- Group: looks up group members via registry, fan-out to each
+```
+sender client
+    │
+    ├── WsMessage { channel_type: GROUP, user_id: "group_id", content: "..." }
+    │
+    ▼
+handle_text_message()
+    ├── build ServerMessage (conversation_id = parse group_id as UUID or random)
+    ├── pubsub.publish_grp() → Redis channel "group:{group_id}"
+    └── kafka.produce("messages", channel_id, json bytes)
+```
 
-### 7. Kafka (`kafka/`)
+### Group join
 
-**Producer (`producer.rs`):**
+```
+sender client
+    │
+    ├── GroupMessage { msg_type: JOIN, tenant_id, group_id, user_id }
+    │
+    ▼
+handle_text_message()
+    ├── registry.join_group(tenant, group, user)
+    ├── build ServerMessage with msg_type: "group_join"
+    └── pubsub.publish_grp() → Redis "group:{group_id}"
+            │
+            ▼
+        Redis listener (all nodes)
+            ├── sees msg_type == "group_join"
+            ├── registry.join_group() on this node too (cross-node sync)
+            └── registry.send_msg_to_group() → deliver to all members
+```
 
-- librdkafka `FutureProducer` with LZ4 compression
-- Batched internally (up to 10K messages, 5ms linger)
-- Leader-ack only (`acks=1`) for throughput
-- Keyed by `channel_id` for partition locality
+This is how group membership propagates across nodes — the join event goes through Redis, and every node's listener calls `join_group()` locally.
 
-**Consumer (`consumer.rs`):**
+## Redis layer
 
-- `StreamConsumer` with manual commit (no auto-commit)
-- Batched consumption: up to 500 messages or 250ms interval
-- On flush: delegates to `MessageBatcher` for bulk DB insert
-- Commits offsets only after successful DB write
+`RedisManager` holds two things:
+- `Client` — used to create a dedicated `PubSub` connection for the listener
+- `ConnectionManager` — a multiplexed connection used by `publish()` and `publish_grp()` (cheaply cloneable, reconnects automatically)
 
-### 8. Database Layer (`db/mod.rs`)
+### Publishing
 
-**`MessageBatcher`:**
+- DM: `PUBLISH user:{tenant_id}:{user_id} <json>`
+- Group: `PUBLISH group:{group_id} <json>`
 
-- Accumulates `ServerMessage` structs in a buffer
-- On capacity threshold: performs bulk `INSERT` using PostgreSQL's `UNNEST` array expansion
-- Single round-trip inserts multiple rows
+### Listener
 
-**SQL:**
+A single task subscribes to patterns `user:*:*` and `group:*` using `psubscribe`. For each incoming message:
+
+1. Deserialize to `ServerMessage`
+2. If `msg_type == "group_join"` → call `registry.join_group()` (cross-node group sync) + fan out to group
+3. If `channel_type == DM` → `registry.send_msg_to_user(tenant, channel_id, msg)` — delivers to recipient
+4. If `channel_type == Group/Community` → `registry.send_msg_to_group(tenant, channel_id, msg)` — delivers to all members
+
+The listener is what enables horizontal scaling. Node A publishes to Redis, Node B's listener picks it up and pushes to local connections.
+
+## Kafka persistence pipeline
+
+### Producer
+
+`FutureProducer` with:
+- LZ4 compression
+- Idempotent writes (`enable.idempotence = true`)
+- Batching: up to 10k messages per batch, 5ms linger
+- 1GB librdkafka buffer
+- All replicas ack (`acks = all`)
+
+Messages are produced with `channel_id` as the Kafka key (so all messages for the same channel land on the same partition, preserving order within a conversation).
+
+### Consumer
+
+`StreamConsumer` with manual commits, group id `realtime-ws-nodes`. Runs a `tokio::select!` loop with `biased` priority:
+
+1. **Shutdown signal** (highest priority) — flush remaining buffer, commit, exit
+2. **Timer (250ms)** — flush whatever's accumulated since last flush
+3. **Message recv** — deserialize `ServerMessage`, push to buffer. If buffer hits 500, flush immediately
+
+So messages land in Postgres within at most 250ms, or sooner if volume is high enough to fill a batch of 500.
+
+### Flush
+
+`flush_batch()` creates a `MessageBatcher`, pushes all messages, calls `flush()`. Then commits offsets asynchronously.
+
+## Database layer
+
+`MessageBatcher` accumulates messages and bulk-inserts using PostgreSQL's `UNNEST`:
+
 ```sql
 INSERT INTO messages (message_id, tenant_id, conversation_id, channel_type, channel_id, sender_id, content, created_at)
 SELECT * FROM UNNEST($1::uuid[], $2::text[], $3::uuid[], $4::text[], $5::text[], $6::text[], $7::text[], $8::timestamptz[])
 ```
 
----
+Each column is collected into a separate `Vec`, then passed as array bind parameters. The batcher has a capacity of 1000 (though the Kafka consumer flushes at 500, so it typically won't hit this).
 
-## Data Flow Diagrams
+On insert failure, messages are reconstructed from the decomposed column vectors and re-buffered for retry on the next flush cycle.
 
-### DM: user1 → user2
+### Schema
 
-```
-user1 (wscat)                    Server                          Redis                        user2 (wscat)
-     │                              │                              │                              │
-     │  {"channel_type":"DM",       │                              │                              │
-     │   "user_id":"user2",         │                              │                              │
-     │   "content":"hi"}            │                              │                              │
-     │─────────────────────────────►│                              │                              │
-     │                              │  PUBLISH user:t1:user2       │                              │
-     │                              │─────────────────────────────►│                              │
-     │                              │                              │  psubscribe match            │
-     │                              │◄─────────────────────────────│                              │
-     │                              │                              │                              │
-     │                              │  registry.send(t1, user2)   │                              │
-     │                              │─────────────────────────────────────────────────────────────►│
-     │                              │  registry.send(t1, user1)   │                              │
-     │◄─────────────────────────────│  (echo to sender)           │                              │
-     │                              │                              │                              │
-     │                              │  Kafka produce (async)      │                              │
-     │                              │──────► Kafka ──────► Consumer ──────► PostgreSQL            │
+```sql
+messages (
+    message_id      UUID PRIMARY KEY,
+    tenant_id       TEXT NOT NULL,
+    conversation_id UUID NOT NULL,
+    channel_type    TEXT NOT NULL DEFAULT '',
+    channel_id      TEXT NOT NULL DEFAULT '',
+    sender_id       TEXT NOT NULL,
+    content         TEXT NOT NULL,
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
+)
 ```
 
-### Group: user1 → group1 (members: user1, user2, user3)
+Indexes on `tenant_id`, `conversation_id`, `created_at`. Migrations run automatically at startup via `sqlx::raw_sql(include_str!(...))`.
 
-```
-user1 (wscat)                    Server                          Redis
-     │                              │                              │
-     │  {"channel_type":"GROUP",    │                              │
-     │   "user_id":"group1",        │                              │
-     │   "content":"hey all"}       │                              │
-     │─────────────────────────────►│                              │
-     │                              │  PUBLISH group:group1        │
-     │                              │─────────────────────────────►│
-     │                              │                              │  psubscribe match
-     │                              │◄─────────────────────────────│
-     │                              │                              │
-     │                              │  lookup group1 members       │
-     │                              │  → [user1, user2, user3]     │
-     │                              │                              │
-     │◄─────────────────────────────│  send to user1               │
-     │                              │─────────────────────────────────► user2
-     │                              │─────────────────────────────────► user3
-```
+## Auth
 
----
+Simple JWT validation. `AuthConfig` holds a `DecodingKey` (HS256 symmetric). `validate_jwt()` decodes the token, requires `exp` claim, extracts `tenant_id` + `user_id` into an `Identity` struct. The `Auth` wrapper makes `AuthConfig` cheaply cloneable via `Arc`.
 
-## Concurrency Model
+Token can be passed two ways:
+- `Authorization: Bearer <token>` header
+- `?token=<token>` query parameter
 
-```
-                    ┌─────────────────────────────────┐
-                    │        Tokio Runtime             │
-                    │    (multi-threaded, work-stealing)│
-                    └─────────────────────────────────┘
-                                   │
-                    ┌──────────────┼──────────────────┐
-                    │              │                   │
-               ┌────┴────┐  ┌─────┴─────┐    ┌───────┴───────┐
-               │  Axum   │  │  Redis    │    │    Kafka      │
-               │ Handler │  │ Listener  │    │   Consumer    │
-               │ (per    │  │ (1 task)  │    │   (1 task)    │
-               │  conn)  │  └───────────┘    └───────────────┘
-               └────┬────┘
-                    │
-          ┌─────────┼─────────┐
-          │                   │
-    ┌─────┴─────┐      ┌─────┴─────┐
-    │  Send     │      │  Recv     │
-    │  Task     │      │  Task     │
-    │ (per conn)│      │ (per conn)│
-    └───────────┘      └───────────┘
-```
+The `ws_handler` checks the header first, falls back to query param.
 
-- Each WebSocket connection spawns **2 tokio tasks** (send + recv)
-- Total tasks per connection: 2
-- At 10K connections: 20K lightweight tasks (trivial for Tokio)
-- Shared state accessed via `DashMap` (sharded, lock-free reads)
+## Conversation IDs
 
----
+DMs get a deterministic conversation ID: sort the two user IDs lexicographically, join with `:`, SHA-256 hash, take first 16 bytes as a UUID. This means the same pair of users always gets the same conversation_id regardless of who sends first.
 
-## Multi-tenancy Isolation
+Group/Community messages try to parse the group_id as a UUID for the conversation_id. If that fails, a random UUID is generated.
 
-All data paths are scoped by `tenant_id`:
+## Multi-tenancy
 
-| Layer              | Isolation mechanism                                    |
-|--------------------|--------------------------------------------------------|
-| Connections        | `DashMap<tenant_id, DashMap<user_id, ...>>`           |
-| Groups             | `DashMap<tenant_id, DashMap<group_id, ...>>`          |
-| Redis channels     | `user:{tenant_id}:{user_id}`                          |
-| PostgreSQL         | `tenant_id` column + index                            |
-| JWT claims         | `tenant_id` extracted and immutable per connection    |
+Everything is keyed by `tenant_id`:
+- Registry: `tenant → user → connections`
+- Groups: `tenant → group → members`
+- Redis channels include tenant: `user:{tenant}:{user}`
+- DB rows carry `tenant_id`
 
-Cross-tenant data access is impossible at the protocol level — the `tenant_id` is derived from the JWT, not from client-supplied data (for DMs; group joins currently accept client-supplied `tenant_id`).
+Tenants are fully isolated — a user in tenant A can't see connections, groups, or messages from tenant B.
 
----
+## Graceful shutdown
 
-## Persistence Pipeline
-
-```
-WS Handler ──► Kafka Producer ──► Kafka Topic "messages" ──► Kafka Consumer ──► MessageBatcher ──► PostgreSQL
-                  (async)             (partitioned by          (batch loop)       (UNNEST bulk)
-                                       channel_id)
-```
-
-**Guarantees:**
-- Messages are produced to Kafka **after** Redis publish (fire-and-forget to Kafka on the hot path)
-- Kafka consumer uses **manual commits** — offsets are committed only after successful DB flush
-- At-least-once delivery to the database (duplicates possible on crash between write and commit; `message_id` PK prevents duplicate rows)
-
----
-
-## Graceful Shutdown
-
-1. CTRL+C triggers `shutdown_signal()`
-2. Axum stops accepting new connections, drains existing ones
-3. Kafka consumer receives shutdown notification, flushes remaining buffer, commits offsets
-4. Process exits
+`shutdown_signal()` waits for either SIGTERM or Ctrl+C using `tokio::select!`. When triggered:
+1. `axum::serve` stops accepting new connections
+2. `kafka.shutdown()` — notifies the consumer via `Notify`, which flushes remaining buffer and commits
+3. Server exits
