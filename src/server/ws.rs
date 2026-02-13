@@ -1,10 +1,9 @@
 use axum::{extract::{State, WebSocketUpgrade, ws::{Message, WebSocket}}, http::{HeaderMap, StatusCode, header}, response::{ IntoResponse, Response }};
-use tracing::info;
+use tracing::{ error,info, warn }; 
 use uuid::Uuid;
 use futures::{sink::SinkExt ,stream::StreamExt };
 
 use crate::{app::AppState, auth::Identity, protocol::{GroupMessage, GroupMessageType}};
-// use crate::auth::Auth;
 use crate::protocol::{ ServerMessage, MessagePayload, ChannelType };
 
 #[derive(serde::Deserialize)]
@@ -22,15 +21,14 @@ pub async fn ws_handler(ws: WebSocketUpgrade, headers: HeaderMap, State(app_stat
     let token = match auth_header.and_then(|h| h.strip_prefix("Bearer ")) {
         Some(t) => t,
         None => {
-            info!("Missing or invalid Authorization header");
+            warn!("Missing or invalid Authorization header");
             return StatusCode::UNAUTHORIZED.into_response();
         }
     };
     let identity = match app_state.auth.authenticate(token) {
         Ok(id) => id,
         Err(e) => { 
-            info!("Authentication failed for token: {}", token);
-            info!("Error: {:?}", e);
+            error!("Error: {:?}", e);
             return StatusCode::UNAUTHORIZED.into_response();
         }
     };
@@ -146,7 +144,6 @@ async fn handle_socket(socket: WebSocket, identity: Identity, app_state: AppStat
         _ = (&mut recv_task) => { send_task.abort(); },
     }
 
-    info!("WebSocket disconnected: {:?}", identity);
     app_state.registry.remove(&identity, &connection_id);
 
 }

@@ -29,7 +29,6 @@ pub async fn run(jwt_secret: String, redis_url: String, kafka_brokers: String, d
         .await
         .expect("Failed to connect to Postgres");
 
-    // Run migrations to ensure the messages table exists
     sqlx::raw_sql(include_str!("../migrations/001_create_messages.sql"))
         .execute(&pool)
         .await
@@ -64,7 +63,8 @@ pub async fn run(jwt_secret: String, redis_url: String, kafka_brokers: String, d
     let listener =  match cuh {
         Ok(l) => l,
         Err(e) => {
-            panic!("Failed to bind to address {}: {}", addr, e);
+            tracing::error!("Failed to bind to address {}: {}", addr, e);
+            return;
         }
     };
     let _ = axum::serve(listener, router).with_graceful_shutdown(shutdown_signal()).await;

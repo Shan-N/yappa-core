@@ -24,7 +24,6 @@ impl Kafka {
         }
     }
 
-    /// Convenience: fire a message onto a topic, keyed by channel_id.
     pub async fn produce(
         &self,
         topic: &str,
@@ -34,8 +33,6 @@ impl Kafka {
         self.producer.send(topic, key, payload).await
     }
 
-    /// Spawn the consumer loop as a background tokio task.
-    /// Returns a `JoinHandle` so the caller can await graceful shutdown.
     pub fn spawn_consumer(&self, topics: Vec<String>) -> tokio::task::JoinHandle<()> {
         let consumer = self.consumer.clone();
         tokio::spawn(async move {
@@ -46,7 +43,6 @@ impl Kafka {
         })
     }
 
-    /// Signal both producer flush and consumer shutdown.
     pub fn shutdown(&self) {
         self.consumer.shutdown();
     }

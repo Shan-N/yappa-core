@@ -9,7 +9,6 @@ use crate::{connection::ConnectionRegistry, protocol::{ChannelType, ServerMessag
 
 pub struct RedisManager {
     client: Client,
-    /// Cached multiplexed connection – reused across all publish calls.
     conn: OnceCell<MultiplexedConnection>,
 }
 
@@ -21,12 +20,11 @@ impl RedisManager {
         }
     }
 
-    /// Get (or lazily create) the shared multiplexed connection.
     async fn conn(&self) -> anyhow::Result<MultiplexedConnection> {
         let c = self.conn
             .get_or_try_init(|| self.client.get_multiplexed_async_connection())
             .await?;
-        Ok(c.clone()) // MultiplexedConnection is cheaply cloneable
+        Ok(c.clone()) 
     }
 
     pub async fn publish(&self, user_id: &str, msg: &ServerMessage) -> anyhow::Result<()> {

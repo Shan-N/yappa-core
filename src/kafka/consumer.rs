@@ -8,9 +8,9 @@ use tracing::{error, info, warn};
 use crate::db::MessageBatcher;
 use crate::protocol::ServerMessage;
 
-/// Tuning knobs for the batch consumer.
-const BATCH_MAX_SIZE: usize = 500; // flush after N messages
-const BATCH_MAX_WAIT: Duration = Duration::from_millis(250); // or after this interval
+
+const BATCH_MAX_SIZE: usize = 500; 
+const BATCH_MAX_WAIT: Duration = Duration::from_millis(250);
 
 pub struct KafkaConsumer {
     consumer: Arc<StreamConsumer>,
@@ -40,16 +40,10 @@ impl KafkaConsumer {
         }
     }
 
-    /// Signal graceful shutdown of the consumer loop.
     pub fn shutdown(&self) {
         self.shutdown.notify_one();
     }
 
-    /// Subscribe and run a batched consumption loop.
-    ///
-    /// Messages are accumulated into a buffer of up to `BATCH_MAX_SIZE` or
-    /// `BATCH_MAX_WAIT`, whichever comes first, then flushed via bulk copy
-    /// to the database.
     pub async fn run(&self, topics: &[&str]) -> anyhow::Result<()> {
         self.consumer.subscribe(topics)?;
         info!("Kafka consumer subscribed to {:?}", topics);
@@ -108,27 +102,6 @@ impl KafkaConsumer {
         }
     }
 
-    /// ---------------------------------------------------------------
-    /// DB BULK COPY PLACEHOLDER
-    /// ---------------------------------------------------------------
-    /// Replace this with an actual bulk insert, e.g.:
-    ///
-    /// ```ignore
-    /// // Using sqlx + PostgreSQL COPY protocol:
-    /// let mut copy_in = pool
-    ///     .copy_in_raw("COPY messages (message_id, tenant_id, channel_type, channel_id, sender_id, ts, payload) FROM STDIN WITH (FORMAT csv)")
-    ///     .await?;
-    /// for msg in batch.iter() {
-    ///     let row = format!(
-    ///         "{},{},{:?},{},{},{},{}\n",
-    ///         msg.message_id, msg.tenant_id, msg.channel_type,
-    ///         msg.channel_id, msg.sender_id, msg.timestamp,
-    ///         serde_json::to_string(&msg.payload).unwrap_or_default(),
-    ///     );
-    ///     copy_in.send(row.as_bytes()).await?;
-    /// }
-    /// copy_in.finish().await?;
-    /// ```
     async fn flush_batch(batch: &mut Vec<ServerMessage>, pool: &sqlx::PgPool) {
         let count = batch.len();
         info!("Flushing batch of {} messages to DB", count);

@@ -14,7 +14,6 @@ async fn main() {
     tracing_subscriber::fmt::init();
     
     let jwt_secret = dotenv::var("JWT_SECRET").expect("JWT_SECRET must be set in .env");
-    // info!("jwt_secret {} loaded from .env", jwt_secret);
     let redis_url = dotenv::var("REDIS_URL").expect("REDIS_URL must be set in .env");
     let kafka_brokers = dotenv::var("KAFKA_BROKERS").expect("KAFKA_BROKERS must be set in .env");
     let database_url = dotenv::var("DATABASE_URL").expect("DATABASE_URL must be set in .env");
