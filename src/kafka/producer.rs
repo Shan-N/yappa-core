@@ -14,9 +14,10 @@ impl KafkaProducer {
             .set("queue.buffering.max.messages", "100000")
             .set("queue.buffering.max.kbytes", "1048576") // 1 GB librdkafka buffer
             .set("batch.num.messages", "10000")
-            .set("linger.ms", "5") // micro-batch latency
+            .set("linger.ms", "5")
+            .set("enable.idempotence", "true") // micro-batch latency
             .set("compression.type", "lz4")
-            .set("acks", "1") // leader-ack for throughput
+            .set("acks", "all") // leader-ack for throughput
             .create::<FutureProducer>()
             .expect("Kafka producer creation failed");
 

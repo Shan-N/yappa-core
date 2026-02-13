@@ -6,10 +6,14 @@ use uuid::Uuid;
 
 use crate::auth::Identity;
 
+// const MAX_TENANTS_USER: usize = 10000;
+pub const CHANNEL_CAPACITY: usize = 256;
+
 
 pub type ConnectionId = Uuid;
 
-pub type SocketSender = mpsc::UnboundedSender<Message>;
+pub type SocketSender = mpsc::Sender<Message>;
+// pub type Sender_Pressure = mpsc
 
 #[derive(Debug, Clone)]
 pub struct ConnectionRegistry {
@@ -35,9 +39,9 @@ impl ConnectionRegistry {
     ) {
         self.inner
             .entry(identity.tenant_id.clone())
-            .or_default()
+            .or_insert_with(DashMap::new)
             .entry(identity.user_id.clone())
-            .or_default()
+            .or_insert_with(DashMap::new)
             .insert(connection_id, sender);
         tracing::info!("Registered connection: tenant_id={}, user_id={}", identity.tenant_id, identity.user_id);
     }
@@ -45,7 +49,7 @@ impl ConnectionRegistry {
     pub fn join_group(&self, tenant_id: &str, group_id: &str, user_id: &str) {
         self.groups
             .entry(tenant_id.to_string())
-            .or_default()
+            .or_insert_with(DashMap::new)
             .entry(group_id.to_string())
             .or_default()
             .insert(user_id.to_string());
@@ -59,6 +63,21 @@ impl ConnectionRegistry {
                 tracing::info!("User {} left group {} in tenant {}", user_id, group_id, tenant_id);
             }
         }
+    }
+    pub fn create_group(&self, tenant_id: &str, group_id: &str) {
+        self.groups
+            .entry(tenant_id.to_string())
+            .or_insert_with(DashMap::new)
+            .entry(group_id.to_string())
+            .or_default();
+        tracing::info!("Group {} created in tenant {}", group_id, tenant_id);
+    }
+
+    pub fn delete_group(&self, tenant_id: &str, group_id: &str) {
+            if let Some(tenant_groups) = self.groups.get(tenant_id) {
+                tenant_groups.remove(&group_id.to_string());
+                tracing::info!("Group {} deleted in tenant {}", group_id, tenant_id);
+            }
     }
     pub fn remove(
         &self, 
@@ -82,18 +101,34 @@ impl ConnectionRegistry {
     pub fn send_msg_to_user(&self, tenant_id: &str, user_id: &str, msg: Message) {
         if let Some(users) = self.inner.get(tenant_id) {
             if let Some(connections) = users.get(user_id) {
+                let mut stale: Vec<ConnectionId> = Vec::new();
                 for entry in connections.iter() {
                     let (conn_id, sender) = entry.pair();
-                    if let Err(e) = sender.send(msg.clone()) {
-                        tracing::error!("Failed to send message to connection {}: {}", conn_id, e);
+                    match sender.try_send(msg.clone()) {
+                        Ok(_) => {},
+                        Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {
+                            tracing::warn!("Channel full for tenant_id={}, user_id={}, connection_id={} — marking stale", tenant_id, user_id, conn_id);
+                            stale.push(*conn_id);
+                        }
+                        Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => {
+                            tracing::warn!("Channel closed for tenant_id={}, user_id={}, connection_id={} — removing", tenant_id, user_id, conn_id);
+                            stale.push(*conn_id);
+                        }
                     }
+                }
+                // Remove stale connections outside of the iterator to avoid deadlock
+                for conn_id in stale {
+                    connections.remove(&conn_id);
+                    tracing::info!("Evicted stale connection: tenant_id={}, user_id={}, conn_id={}", tenant_id, user_id, conn_id);
+                }
+                if connections.is_empty() {
+                    users.remove(user_id);
                 }
             }
         }
     }
 
     pub fn send_msg_to_group(&self, tenant_id: &str, group_id: &str, msg: Message) {
-        // Get the list of users in the group to avoid holding lock during sends
         let user_ids: Vec<String> = if let Some(tenant_groups) = self.groups.get(tenant_id) {
             if let Some(members) = tenant_groups.get(group_id) {
                 members.iter().map(|id| id.clone()).collect()

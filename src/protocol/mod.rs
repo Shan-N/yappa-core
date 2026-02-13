@@ -1,5 +1,7 @@
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
+use sha2::{Sha256, Digest};
+
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
@@ -14,6 +16,8 @@ pub enum ChannelType {
 pub enum GroupMessageType {
     Join,
     Leave,
+    Create,
+    Delete,
 }
 
 
@@ -44,4 +48,21 @@ pub struct GroupMessage {
     pub tenant_id: String,
     pub group_id: String,
     pub user_id: String,
+}
+
+
+pub fn generate_dm_conversation_id(user_a: &str, user_b: &str) -> Uuid {
+    let mut participants = vec![user_a, user_b];
+    participants.sort();
+    
+    let combined = format!("{}:{}", participants[0], participants[1]);
+    
+
+    let mut hasher = Sha256::new();
+    hasher.update(combined.as_bytes());
+    let result = hasher.finalize();
+
+    let uuid = Uuid::from_slice(&result[0..16]).unwrap_or_else(|_| Uuid::new_v4());
+    // uuid.to_string()
+    uuid
 }

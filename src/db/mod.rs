@@ -1,4 +1,5 @@
 use sqlx::{PgPool, query};
+use tracing::info;
 use uuid::Uuid;
 use chrono::{DateTime, Utc};
 
@@ -70,8 +71,31 @@ impl MessageBatcher {
             .execute(&self.pool)
             .await
         {
-            eprintln!("Batch insert error: {e}");
-            // Optionally: re-buffer failed messages for retry
+            tracing::error!("Batch insert error: {e}");
+            info!("Failed to insert batch of {} messages, retrying", len);
+            // On error, re-buffer the messages for retry
+            for i in 0..len {
+                self.buffer.push(ServerMessage {
+                    message_id: ids[i],
+                    msg_type: "chat".to_string(),
+                    tenant_id: tenants[i].clone(),
+                    channel_type: match channel_type[i].as_str() {
+                        "Group" => crate::protocol::ChannelType::Group,
+                        "Dm" => crate::protocol::ChannelType::Dm,
+                        _ => crate::protocol::ChannelType::Dm,
+                    },
+                    channel_id: channel_id[i].clone(),
+                    sender_id: senders[i].clone(),
+                    conversation_id: conversations[i],
+                    timestamp: times[i],
+                    payload: crate::protocol::MessagePayload {
+                        text: contents[i].clone(),
+                        meta: serde_json::json!({}),
+                    },
+                });
+            }
+
         }
+
     }
 }

@@ -1,7 +1,6 @@
-use redis::{aio::MultiplexedConnection, Client};
+use redis::{Client, aio::{ConnectionManager}};
 use futures::StreamExt;
 use axum::extract::ws::Message;
-use tokio::sync::OnceCell;
 
 use crate::{connection::ConnectionRegistry, protocol::{ChannelType, ServerMessage}};
 
@@ -9,26 +8,21 @@ use crate::{connection::ConnectionRegistry, protocol::{ChannelType, ServerMessag
 
 pub struct RedisManager {
     client: Client,
-    conn: OnceCell<MultiplexedConnection>,
+    conn: ConnectionManager,
 }
 
 impl RedisManager {
-    pub fn new(redis_url: &str) -> Self {
-        Self {
-            client: Client::open(redis_url).expect("Invalid Redis URL"),
-            conn: OnceCell::new(),
-        }
-    }
-
-    async fn conn(&self) -> anyhow::Result<MultiplexedConnection> {
-        let c = self.conn
-            .get_or_try_init(|| self.client.get_multiplexed_async_connection())
-            .await?;
-        Ok(c.clone()) 
+    pub async fn new(redis_url: &str) -> anyhow::Result<Self> {
+        let client = Client::open(redis_url).expect("Redis URL not set");
+        let manager = client.get_connection_manager().await?;
+        Ok(Self {
+            client,
+            conn: manager,
+        })
     }
 
     pub async fn publish(&self, user_id: &str, msg: &ServerMessage) -> anyhow::Result<()> {
-        let mut conn = self.conn().await?;
+        let mut conn = self.conn.clone();
         let channel = format!("user:{}:{}", msg.tenant_id, user_id);
         let payload = serde_json::to_string(msg)?;
         redis::cmd("PUBLISH").arg(&channel).arg(&payload).query_async::<()>(&mut conn).await?;
@@ -36,7 +30,7 @@ impl RedisManager {
     }
 
     pub async fn publish_grp(&self, group_id: &str, msg: &ServerMessage) -> anyhow::Result<()> {
-        let mut conn = self.conn().await?;
+        let mut conn = self.conn.clone();
         let channel = format!("group:{}", group_id);
         let payload = serde_json::to_string(msg)?;
         redis::cmd("PUBLISH").arg(&channel).arg(&payload).query_async::<()>(&mut conn).await?;
