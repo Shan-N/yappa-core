@@ -1,23 +1,25 @@
 mod app;
-mod server;
 mod auth;
 mod connection;
+mod db;
+mod kafka;
 mod protocol;
 mod redis;
-mod kafka;
-mod db;
-
+mod server;
 
 #[tokio::main]
 async fn main() {
     dotenv::dotenv().ok();
     tracing_subscriber::fmt::init();
-    
+
     let jwt_secret = dotenv::var("JWT_SECRET").expect("JWT_SECRET must be set in .env");
     let redis_url = dotenv::var("REDIS_URL").expect("REDIS_URL must be set in .env");
     let kafka_brokers = dotenv::var("KAFKA_BROKERS").expect("KAFKA_BROKERS must be set in .env");
     let database_url = dotenv::var("DATABASE_URL").expect("DATABASE_URL must be set in .env");
-    let port = dotenv::var("PORT").expect("PORT not set in .env").parse::<u16>().expect("PORT must be a valid u16");
+    let port = dotenv::var("PORT")
+        .expect("PORT not set in .env")
+        .parse::<u16>()
+        .expect("PORT must be a valid u16");
 
     app::run(jwt_secret, redis_url, kafka_brokers, database_url, port).await;
 }

@@ -1,5 +1,5 @@
-use rdkafka::consumer::{CommitMode, Consumer, StreamConsumer};
 use rdkafka::Message;
+use rdkafka::consumer::{CommitMode, Consumer, StreamConsumer};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::Notify;
@@ -8,8 +8,7 @@ use tracing::{error, info, warn};
 use crate::db::MessageBatcher;
 use crate::protocol::ServerMessage;
 
-
-const BATCH_MAX_SIZE: usize = 500; 
+const BATCH_MAX_SIZE: usize = 500;
 const BATCH_MAX_WAIT: Duration = Duration::from_millis(250);
 
 pub struct KafkaConsumer {

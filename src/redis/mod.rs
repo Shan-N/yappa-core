@@ -1,10 +1,11 @@
-use redis::{Client, aio::{ConnectionManager}};
-use futures::StreamExt;
 use axum::extract::ws::Message;
+use futures::StreamExt;
+use redis::{Client, aio::ConnectionManager};
 
-use crate::{connection::ConnectionRegistry, protocol::{ChannelType, ServerMessage}};
-
-
+use crate::{
+    connection::ConnectionRegistry,
+    protocol::{ChannelType, ServerMessage},
+};
 
 pub struct RedisManager {
     client: Client,
@@ -25,7 +26,11 @@ impl RedisManager {
         let mut conn = self.conn.clone();
         let channel = format!("user:{}:{}", msg.tenant_id, user_id);
         let payload = serde_json::to_string(msg)?;
-        redis::cmd("PUBLISH").arg(&channel).arg(&payload).query_async::<()>(&mut conn).await?;
+        redis::cmd("PUBLISH")
+            .arg(&channel)
+            .arg(&payload)
+            .query_async::<()>(&mut conn)
+            .await?;
         Ok(())
     }
 
@@ -33,7 +38,11 @@ impl RedisManager {
         let mut conn = self.conn.clone();
         let channel = format!("group:{}", group_id);
         let payload = serde_json::to_string(msg)?;
-        redis::cmd("PUBLISH").arg(&channel).arg(&payload).query_async::<()>(&mut conn).await?;
+        redis::cmd("PUBLISH")
+            .arg(&channel)
+            .arg(&payload)
+            .query_async::<()>(&mut conn)
+            .await?;
         Ok(())
     }
 
@@ -49,8 +58,16 @@ impl RedisManager {
                 let ws_msg = Message::Text(json_str.into());
 
                 if server_msg.msg_type == "group_join" {
-                    registry.join_group(&server_msg.tenant_id, &server_msg.channel_id, &server_msg.sender_id);
-                    registry.send_msg_to_group(&server_msg.tenant_id, &server_msg.channel_id, ws_msg.clone());
+                    registry.join_group(
+                        &server_msg.tenant_id,
+                        &server_msg.channel_id,
+                        &server_msg.sender_id,
+                    );
+                    registry.send_msg_to_group(
+                        &server_msg.tenant_id,
+                        &server_msg.channel_id,
+                        ws_msg.clone(),
+                    );
                     continue;
                 }
 

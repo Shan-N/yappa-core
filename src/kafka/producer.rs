@@ -26,9 +26,7 @@ impl KafkaProducer {
 
     /// Send a keyed message. Returns after broker ack.
     pub async fn send(&self, topic: &str, key: &str, payload: &[u8]) -> Result<(), KafkaError> {
-        let record = FutureRecord::to(topic)
-            .key(key)
-            .payload(payload);
+        let record = FutureRecord::to(topic).key(key).payload(payload);
 
         self.producer
             .send(record, Duration::from_secs(5))

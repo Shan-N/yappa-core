@@ -1,11 +1,23 @@
-use axum::{extract::{State, WebSocketUpgrade, ws::{Message, WebSocket}}, http::{HeaderMap, StatusCode, Uri, header}, response::{ IntoResponse, Response }};
-use tracing::{ error,info, warn }; 
-use uuid::Uuid;
-use futures::{sink::SinkExt ,stream::StreamExt };
+use axum::{
+    extract::{
+        State, WebSocketUpgrade,
+        ws::{Message, WebSocket},
+    },
+    http::{HeaderMap, StatusCode, Uri, header},
+    response::{IntoResponse, Response},
+};
+use futures::{sink::SinkExt, stream::StreamExt};
 use std::time::Duration;
+use tracing::{error, info, warn};
+use uuid::Uuid;
 
-use crate::{app::AppState, auth::Identity, connection::{CHANNEL_CAPACITY, ConnectionId, ConnectionRegistry}, protocol::{GroupMessage, GroupMessageType, generate_dm_conversation_id}};
-use crate::protocol::{ ServerMessage, MessagePayload, ChannelType };
+use crate::protocol::{ChannelType, MessagePayload, ServerMessage};
+use crate::{
+    app::AppState,
+    auth::Identity,
+    connection::{CHANNEL_CAPACITY, ConnectionId, ConnectionRegistry},
+    protocol::{GroupMessage, GroupMessageType, generate_dm_conversation_id},
+};
 
 #[derive(serde::Deserialize)]
 pub struct WsMessage {
@@ -16,11 +28,9 @@ pub struct WsMessage {
 
 const MAX_PAYLOAD_SIZE: usize = 64 * 1024;
 
-
 const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(15);
 const HEARTBEAT_TIMEOUT: Duration = Duration::from_secs(30);
 const SEND_TIMEOUT: Duration = Duration::from_secs(5);
-
 
 struct ConnectionGuard {
     registry: ConnectionRegistry,
@@ -38,13 +48,23 @@ impl Drop for ConnectionGuard {
     }
 }
 
-pub async fn ws_handler(ws: WebSocketUpgrade, headers: HeaderMap, State(app_state): State<AppState>, uri: Uri) -> Response {
-    let auth_header = headers.get(header::AUTHORIZATION).and_then(|h| h.to_str().ok());
+pub async fn ws_handler(
+    ws: WebSocketUpgrade,
+    headers: HeaderMap,
+    State(app_state): State<AppState>,
+    uri: Uri,
+) -> Response {
+    let auth_header = headers
+        .get(header::AUTHORIZATION)
+        .and_then(|h| h.to_str().ok());
     let query = uri.query().unwrap_or("");
-    let query_params = query.split('&').filter_map(|kv| {
-        let mut parts = kv.splitn(2, '=');
-        Some((parts.next()?, parts.next()?))
-    }).collect::<std::collections::HashMap<_, _>>();
+    let query_params = query
+        .split('&')
+        .filter_map(|kv| {
+            let mut parts = kv.splitn(2, '=');
+            Some((parts.next()?, parts.next()?))
+        })
+        .collect::<std::collections::HashMap<_, _>>();
 
     let token = auth_header
         .and_then(|h| h.strip_prefix("Bearer "))
@@ -59,7 +79,7 @@ pub async fn ws_handler(ws: WebSocketUpgrade, headers: HeaderMap, State(app_stat
     };
     let identity = match app_state.auth.authenticate(token) {
         Ok(id) => id,
-        Err(e) => { 
+        Err(e) => {
             error!("Error: {:?}", e);
             return StatusCode::UNAUTHORIZED.into_response();
         }
@@ -68,7 +88,6 @@ pub async fn ws_handler(ws: WebSocketUpgrade, headers: HeaderMap, State(app_stat
 }
 
 async fn handle_socket(socket: WebSocket, identity: Identity, app_state: AppState) {
-
     let (mut sender, mut receiver) = socket.split();
     let connection_id = Uuid::new_v4();
 
@@ -100,7 +119,6 @@ async fn handle_socket(socket: WebSocket, identity: Identity, app_state: AppStat
 
     let state_clone = app_state.clone();
     let identity_clone = identity.clone();
-
 
     let mut recv_task = tokio::spawn(async move {
         let mut heartbeat_interval = tokio::time::interval(HEARTBEAT_INTERVAL);
@@ -155,19 +173,21 @@ async fn handle_socket(socket: WebSocket, identity: Identity, app_state: AppStat
         }
     });
 
-
     tokio::select! {
         _ = (&mut send_task) => { recv_task.abort(); },
         _ = (&mut recv_task) => { send_task.abort(); },
     }
-
 }
 
 async fn handle_text_message(text: &str, identity: &Identity, state: &AppState) {
     if let Ok(group_state) = serde_json::from_str::<GroupMessage>(text) {
         match group_state.msg_type {
             GroupMessageType::Join => {
-                state.registry.join_group(&identity.tenant_id, &group_state.group_id, &identity.user_id);
+                state.registry.join_group(
+                    &identity.tenant_id,
+                    &group_state.group_id,
+                    &identity.user_id,
+                );
                 let server_msg = ServerMessage {
                     msg_type: "group_join".to_string(),
                     message_id: Uuid::new_v4(),
@@ -175,31 +195,57 @@ async fn handle_text_message(text: &str, identity: &Identity, state: &AppState) 
                     channel_id: group_state.group_id.clone(),
                     channel_type: ChannelType::Group,
                     sender_id: identity.user_id.clone(),
-                    timestamp: std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs(),
-                    conversation_id: group_state.group_id.parse::<Uuid>().unwrap_or_else(|_| Uuid::new_v4()), 
+                    timestamp: std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .unwrap()
+                        .as_secs(),
+                    conversation_id: group_state
+                        .group_id
+                        .parse::<Uuid>()
+                        .unwrap_or_else(|_| Uuid::new_v4()),
                     payload: MessagePayload {
                         text: format!("{} has joined the group", identity.user_id),
                         meta: serde_json::json!({}),
                     },
                 };
-                if let Err(e) = state.pubsub.publish_grp(&group_state.group_id, &server_msg).await {
+                if let Err(e) = state
+                    .pubsub
+                    .publish_grp(&group_state.group_id, &server_msg)
+                    .await
+                {
                     tracing::error!("Redis publish failed: {}", e);
                 }
             }
             GroupMessageType::Leave => {
-                state.registry.leave_group(&identity.tenant_id, &group_state.group_id, &identity.user_id);
+                state.registry.leave_group(
+                    &identity.tenant_id,
+                    &group_state.group_id,
+                    &identity.user_id,
+                );
             }
             GroupMessageType::Create => {
-                state.registry.create_group(&identity.tenant_id, &group_state.group_id);
+                state
+                    .registry
+                    .create_group(&identity.tenant_id, &group_state.group_id);
             }
             GroupMessageType::Delete => {
-                state.registry.delete_group(&identity.tenant_id, &group_state.group_id);
+                state
+                    .registry
+                    .delete_group(&identity.tenant_id, &group_state.group_id);
             }
         }
     } else if let Ok(payload) = serde_json::from_str::<WsMessage>(text) {
         if payload.content.len() > MAX_PAYLOAD_SIZE {
-            warn!("Payload too large from user {}: {} bytes", identity.user_id, payload.content.len());
-            state.registry.send_msg_to_user(&identity.tenant_id, &identity.user_id, Message::Text("Payload too large".into()));
+            warn!(
+                "Payload too large from user {}: {} bytes",
+                identity.user_id,
+                payload.content.len()
+            );
+            state.registry.send_msg_to_user(
+                &identity.tenant_id,
+                &identity.user_id,
+                Message::Text("Payload too large".into()),
+            );
             return;
         }
         match payload.channel_type {
@@ -211,25 +257,38 @@ async fn handle_text_message(text: &str, identity: &Identity, state: &AppState) 
                     channel_type: payload.channel_type.clone(),
                     channel_id: payload.user_id.clone(),
                     sender_id: identity.user_id.clone(),
-                    conversation_id: generate_dm_conversation_id(&identity.user_id, &payload.user_id),
-                    timestamp: std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs(),
+                    conversation_id: generate_dm_conversation_id(
+                        &identity.user_id,
+                        &payload.user_id,
+                    ),
+                    timestamp: std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .unwrap()
+                        .as_secs(),
                     payload: MessagePayload {
                         text: payload.content.clone(),
                         meta: serde_json::json!({}),
                     },
                 };
-                info!("Received message to user {}: {}", payload.user_id, payload.content);
+                info!(
+                    "Received message to user {}: {}",
+                    payload.user_id, payload.content
+                );
 
                 if let Err(e) = state.pubsub.publish(&payload.user_id, &server_msg).await {
                     tracing::error!("Redis publish failed: {}", e);
                 }
 
                 if let Ok(kafka_payload) = serde_json::to_vec(&server_msg) {
-                    if let Err(e) = state.kafka.produce("messages", &server_msg.channel_id, &kafka_payload).await {
+                    if let Err(e) = state
+                        .kafka
+                        .produce("messages", &server_msg.channel_id, &kafka_payload)
+                        .await
+                    {
                         tracing::error!("Kafka produce failed: {}", e);
                     }
                 }
-            },
+            }
             ChannelType::Group | ChannelType::Community => {
                 let server_msg = ServerMessage {
                     message_id: Uuid::new_v4(),
@@ -238,21 +297,38 @@ async fn handle_text_message(text: &str, identity: &Identity, state: &AppState) 
                     channel_type: payload.channel_type.clone(),
                     channel_id: payload.user_id.clone(), // here user_id is actually group_id
                     sender_id: identity.user_id.clone(),
-                    timestamp: std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs(),
-                    conversation_id: payload.user_id.parse::<Uuid>().unwrap_or_else(|_| Uuid::new_v4()), 
+                    timestamp: std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .unwrap()
+                        .as_secs(),
+                    conversation_id: payload
+                        .user_id
+                        .parse::<Uuid>()
+                        .unwrap_or_else(|_| Uuid::new_v4()),
                     payload: MessagePayload {
                         text: payload.content.clone(),
                         meta: serde_json::json!({}),
                     },
                 };
-                info!("Received message to group {}: {}", payload.user_id, payload.content);
-                if let Err(e) = state.pubsub.publish_grp(&payload.user_id, &server_msg).await {
+                info!(
+                    "Received message to group {}: {}",
+                    payload.user_id, payload.content
+                );
+                if let Err(e) = state
+                    .pubsub
+                    .publish_grp(&payload.user_id, &server_msg)
+                    .await
+                {
                     tracing::error!("Redis publish failed: {}", e);
                 }
 
                 // Produce to Kafka for DB persistence
                 if let Ok(kafka_payload) = serde_json::to_vec(&server_msg) {
-                    if let Err(e) = state.kafka.produce("messages", &server_msg.channel_id, &kafka_payload).await {
+                    if let Err(e) = state
+                        .kafka
+                        .produce("messages", &server_msg.channel_id, &kafka_payload)
+                        .await
+                    {
                         tracing::error!("Kafka produce failed: {}", e);
                     }
                 }

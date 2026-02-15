@@ -1,10 +1,9 @@
+use chrono::{DateTime, Utc};
 use sqlx::{PgPool, query};
 use tracing::info;
 use uuid::Uuid;
-use chrono::{DateTime, Utc};
 
 use crate::protocol::ServerMessage;
-
 
 pub struct MessageBatcher {
     pool: PgPool,
@@ -67,7 +66,12 @@ impl MessageBatcher {
             .bind(&channel_id[..])
             .bind(&senders[..])
             .bind(&contents[..])
-            .bind(&times.iter().map(|ts| DateTime::<Utc>::from_timestamp(*ts as i64, 0).unwrap_or_default()).collect::<Vec<_>>()[..])
+            .bind(
+                &times
+                    .iter()
+                    .map(|ts| DateTime::<Utc>::from_timestamp(*ts as i64, 0).unwrap_or_default())
+                    .collect::<Vec<_>>()[..],
+            )
             .execute(&self.pool)
             .await
         {
@@ -94,8 +98,6 @@ impl MessageBatcher {
                     },
                 });
             }
-
         }
-
     }
 }

@@ -1,7 +1,6 @@
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use uuid::Uuid;
-use sha2::{Sha256, Digest};
-
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
@@ -20,13 +19,11 @@ pub enum GroupMessageType {
     Delete,
 }
 
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MessagePayload {
     pub text: String,
     pub meta: serde_json::Value,
 }
-
 
 #[derive(Debug, Serialize, Clone, Deserialize)]
 pub struct ServerMessage {
@@ -50,13 +47,11 @@ pub struct GroupMessage {
     pub user_id: String,
 }
 
-
 pub fn generate_dm_conversation_id(user_a: &str, user_b: &str) -> Uuid {
     let mut participants = vec![user_a, user_b];
     participants.sort();
-    
+
     let combined = format!("{}:{}", participants[0], participants[1]);
-    
 
     let mut hasher = Sha256::new();
     hasher.update(combined.as_bytes());

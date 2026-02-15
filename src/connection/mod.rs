@@ -1,6 +1,6 @@
-use std::sync::Arc;
-use dashmap::{DashMap, DashSet};
 use axum::extract::ws::Message;
+use dashmap::{DashMap, DashSet};
+use std::sync::Arc;
 use tokio::sync::mpsc;
 use uuid::Uuid;
 
@@ -8,7 +8,6 @@ use crate::auth::Identity;
 
 // const MAX_TENANTS_USER: usize = 10000;
 pub const CHANNEL_CAPACITY: usize = 256;
-
 
 pub type ConnectionId = Uuid;
 
@@ -31,19 +30,18 @@ impl ConnectionRegistry {
         }
     }
 
-    pub fn insert(
-        &self,
-        identity: &Identity,
-        connection_id: ConnectionId,
-        sender: SocketSender,
-    ) {
+    pub fn insert(&self, identity: &Identity, connection_id: ConnectionId, sender: SocketSender) {
         self.inner
             .entry(identity.tenant_id.clone())
             .or_insert_with(DashMap::new)
             .entry(identity.user_id.clone())
             .or_insert_with(DashMap::new)
             .insert(connection_id, sender);
-        tracing::info!("Registered connection: tenant_id={}, user_id={}", identity.tenant_id, identity.user_id);
+        tracing::info!(
+            "Registered connection: tenant_id={}, user_id={}",
+            identity.tenant_id,
+            identity.user_id
+        );
     }
 
     pub fn join_group(&self, tenant_id: &str, group_id: &str, user_id: &str) {
@@ -53,14 +51,24 @@ impl ConnectionRegistry {
             .entry(group_id.to_string())
             .or_default()
             .insert(user_id.to_string());
-        tracing::info!("User {} joined group {} in tenant {}", user_id, group_id, tenant_id);
+        tracing::info!(
+            "User {} joined group {} in tenant {}",
+            user_id,
+            group_id,
+            tenant_id
+        );
     }
 
     pub fn leave_group(&self, tenant_id: &str, group_id: &str, user_id: &str) {
         if let Some(tenant_groups) = self.groups.get(tenant_id) {
             if let Some(members) = tenant_groups.get(group_id) {
                 members.remove(user_id);
-                tracing::info!("User {} left group {} in tenant {}", user_id, group_id, tenant_id);
+                tracing::info!(
+                    "User {} left group {} in tenant {}",
+                    user_id,
+                    group_id,
+                    tenant_id
+                );
             }
         }
     }
@@ -74,16 +82,12 @@ impl ConnectionRegistry {
     }
 
     pub fn delete_group(&self, tenant_id: &str, group_id: &str) {
-            if let Some(tenant_groups) = self.groups.get(tenant_id) {
-                tenant_groups.remove(&group_id.to_string());
-                tracing::info!("Group {} deleted in tenant {}", group_id, tenant_id);
-            }
+        if let Some(tenant_groups) = self.groups.get(tenant_id) {
+            tenant_groups.remove(&group_id.to_string());
+            tracing::info!("Group {} deleted in tenant {}", group_id, tenant_id);
+        }
     }
-    pub fn remove(
-        &self, 
-        identity: &Identity, 
-        connection_id: &ConnectionId,
-    ) {
+    pub fn remove(&self, identity: &Identity, connection_id: &ConnectionId) {
         let should_remove_user;
         let should_remove_tenant;
 
@@ -106,7 +110,11 @@ impl ConnectionRegistry {
         if should_remove_tenant {
             self.inner.remove(&identity.tenant_id);
         }
-        tracing::info!("Removed connection: tenant_id={}, user_id={}", identity.tenant_id, identity.user_id);
+        tracing::info!(
+            "Removed connection: tenant_id={}, user_id={}",
+            identity.tenant_id,
+            identity.user_id
+        );
     }
 
     pub fn send_msg_to_user(&self, tenant_id: &str, user_id: &str, msg: Message) {
@@ -117,13 +125,23 @@ impl ConnectionRegistry {
                 for entry in connections.iter() {
                     let (conn_id, sender) = entry.pair();
                     match sender.try_send(msg.clone()) {
-                        Ok(_) => {},
+                        Ok(_) => {}
                         Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {
-                            tracing::warn!("Channel full for tenant_id={}, user_id={}, connection_id={} — marking stale", tenant_id, user_id, conn_id);
+                            tracing::warn!(
+                                "Channel full for tenant_id={}, user_id={}, connection_id={} — marking stale",
+                                tenant_id,
+                                user_id,
+                                conn_id
+                            );
                             stale.push(*conn_id);
                         }
                         Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => {
-                            tracing::warn!("Channel closed for tenant_id={}, user_id={}, connection_id={} — removing", tenant_id, user_id, conn_id);
+                            tracing::warn!(
+                                "Channel closed for tenant_id={}, user_id={}, connection_id={} — removing",
+                                tenant_id,
+                                user_id,
+                                conn_id
+                            );
                             stale.push(*conn_id);
                         }
                     }
@@ -131,7 +149,12 @@ impl ConnectionRegistry {
                 // Remove stale connections outside of the iterator to avoid deadlock
                 for conn_id in stale {
                     connections.remove(&conn_id);
-                    tracing::info!("Evicted stale connection: tenant_id={}, user_id={}, conn_id={}", tenant_id, user_id, conn_id);
+                    tracing::info!(
+                        "Evicted stale connection: tenant_id={}, user_id={}, conn_id={}",
+                        tenant_id,
+                        user_id,
+                        conn_id
+                    );
                 }
                 should_remove_user = connections.is_empty();
             } else {

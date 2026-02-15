@@ -1,9 +1,13 @@
 use std::sync::Arc;
 
-use crate::auth::{claims::Claims, jwt::{AuthConfig, AuthError}};
+use crate::auth::{
+    claims::Claims,
+    jwt::{AuthConfig, AuthError},
+};
 
-mod jwt;
 pub mod claims;
+mod jwt;
+mod keys;
 
 #[derive(Debug, serde::Serialize, serde::Deserialize, Clone)]
 pub struct Identity {
