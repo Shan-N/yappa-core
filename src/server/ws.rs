@@ -290,6 +290,22 @@ async fn handle_text_message(text: &str, identity: &Identity, state: &AppState) 
                 }
             }
             ChannelType::Group | ChannelType::Community => {
+                if !state.registry.is_user_in_group(
+                    &identity.tenant_id,
+                    &payload.user_id,
+                    &identity.user_id,
+                ) {
+                    warn!(
+                        "User {} attempted to send message to group {} without joining",
+                        identity.user_id, payload.user_id
+                    );
+                    state.registry.send_msg_to_user(
+                        &identity.tenant_id,
+                        &identity.user_id,
+                        Message::Text("You must join the group before sending messages".into()),
+                    );
+                    return;
+                }
                 let server_msg = ServerMessage {
                     message_id: Uuid::new_v4(),
                     msg_type: "chat".to_string(),

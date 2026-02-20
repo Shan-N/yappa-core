@@ -183,4 +183,13 @@ impl ConnectionRegistry {
             self.send_msg_to_user(tenant_id, &user_id, msg.clone());
         }
     }
+
+    pub fn is_user_in_group(&self, tenant_id: &str, group_id: &str, user_id: &str) -> bool {
+        if let Some(tenant_groups) = self.groups.get(tenant_id) {
+            if let Some(members) = tenant_groups.get(group_id) {
+                return members.contains(user_id);
+            }
+        }
+        false
+    }
 }

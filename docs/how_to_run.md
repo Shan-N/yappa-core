@@ -1,3 +1,27 @@
+## Prerequisites
+- Docker & Docker Compose
+
+## 1. Obtain the Docker Image
+Pull the pre-built image from your registry (replace `<image-name>` with your actual image name, e.g., `ghcr.io/yourorg/yappa-rt:latest`):
+```
+docker pull shan117/yappa-rt:latest
+```
+
+## 2. Set Up Environment Variables
+Copy the example environment file and edit as needed:
+```
+cp .env.example .env
+# Edit .env with your preferred settings
+```.env
+JWT_SECRET="YOUR_JWT_SECRET_HERE"
+REDIS_URL=
+KAFKA_BROKERS=
+DATABASE_URL=
+```
+
+## 3. Update docker-compose.yml
+Edit the `docker-compose.yml` to use the image instead of building from source. Example:
+```yaml
 services:
   app:
     build: .
@@ -72,3 +96,28 @@ volumes:
   pgdata:
   redisdata:
   kafkadata:
+
+```
+Remove or comment out the `build: .` line in the `app` service.
+
+## 4. Start All Services
+```
+docker-compose up -d
+```
+
+The app will be available at http://localhost:8080
+
+## 5. View Logs
+To see logs for the app service:
+```
+docker-compose logs -f app
+```
+
+## 6. Stopping Services
+To stop and remove all containers:
+```
+docker-compose down
+```
+
+---
+

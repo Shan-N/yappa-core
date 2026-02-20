@@ -1,5 +1,4 @@
-# ── Stage 1: build ──────────────────────────────────────────
-FROM rust:1.85-bookworm AS builder
+FROM rust:1.90-bookworm AS builder
 
 RUN apt-get update && apt-get install -y \
     cmake \
@@ -21,7 +20,7 @@ COPY src/ src/
 COPY migrations/ migrations/
 RUN touch src/main.rs && cargo build --release
 
-# ── Stage 2: runtime ───────────────────────────────────────
+
 FROM debian:bookworm-slim
 
 RUN apt-get update && apt-get install -y \
@@ -30,10 +29,10 @@ RUN apt-get update && apt-get install -y \
     librdkafka1 \
     && rm -rf /var/lib/apt/lists/*
 
-COPY --from=builder /app/target/release/realtime-ws /usr/local/bin/realtime-ws
+COPY --from=builder /app/target/release/yappa-rt /usr/local/bin/yappa-rt
 COPY migrations/ /app/migrations/
 
 WORKDIR /app
 EXPOSE 8080
 
-CMD ["realtime-ws"]
+CMD ["yappa-rt"]
