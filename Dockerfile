@@ -1,6 +1,7 @@
-FROM rust:1.75-alpine AS builder
+FROM rust:1.88-alpine AS builder
 
-RUN apk add --no-cache musl-dev
+# Install build dependencies (including bash for rdkafka-sys)
+RUN apk add --no-cache musl-dev bash g++ make openssl-dev openssl-libs-static pkgconfig
 
 WORKDIR /app
 

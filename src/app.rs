@@ -101,6 +101,7 @@ pub async fn run(cfg: AppConfig) {
         None
     };
 
+    info!("Creating AppState...");
     let app_state = AppState {
         auth: Auth::new(&cfg.jwt_secret, &cfg.jwt_issuer, &cfg.jwt_audience),
         registry: ConnectionRegistry::new(),
@@ -109,10 +110,12 @@ pub async fn run(cfg: AppConfig) {
         limiter,
         db_pool: pool,
     };
+    info!("AppState created");
 
     let pubsub_clone = app_state.pubsub.clone();
     let registry_clone = app_state.registry.clone();
     tokio::spawn(async move {
+        info!("Starting Redis pubsub listener...");
         if let Err(e) = pubsub_clone.listener(registry_clone).await {
             error!("Error in Redis listener: {}", e);
         }
@@ -121,11 +124,11 @@ pub async fn run(cfg: AppConfig) {
     if let Some(k) = &kafka {
         let _consumer_handle = k.spawn_consumer(vec!["messages".to_string()]);
     } else {
-        // Direct-mode persistence loop: drain messages straight to Postgres.
         let pool = app_state.db_pool.clone();
         tokio::spawn(direct_persistence_loop(pool));
     }
 
+    info!("Building router...");
     let cors = build_cors(&cfg.cors_origins);
     let router = Router::new()
         .route("/health", get(health))
@@ -134,14 +137,19 @@ pub async fn run(cfg: AppConfig) {
         .layer(cors);
 
     let addr = SocketAddr::from(([0, 0, 0, 0], cfg.port));
+    info!("Binding to address {}...", addr);
     let listener = match TcpListener::bind(addr).await {
-        Ok(l) => l,
+        Ok(l) => {
+            info!("Successfully bound to {}", addr);
+            l
+        }
         Err(e) => {
             error!("Failed to bind to address {}: {}", addr, e);
             return;
         }
     };
 
+    info!("Starting HTTP server...");
     let serve = axum::serve(listener, router)
         .with_graceful_shutdown(shutdown_signal())
         .await;

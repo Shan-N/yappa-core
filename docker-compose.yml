@@ -29,6 +29,7 @@ services:
       MAX_USERS_PER_TENANT: ${MAX_USERS_PER_TENANT:-10}
       PORT: "8080"
       RUST_LOG: info
+      RUST_BACKTRACE: "1"
     depends_on:
       postgres:
         condition: service_healthy
