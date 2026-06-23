@@ -1,0 +1,13 @@
+.env
+docker-compose.yml
+Dockerfile
+.git
+.gitignore
+README.md
+LICENSE
+.vscode
+/bench
+/docs
+/images
+/target
+lol.png

@@ -30,8 +30,8 @@ pub struct Auth {
 }
 
 impl Auth {
-    pub fn new(secret: &str) -> Self {
-        let config = Arc::new(AuthConfig::new(secret));
+    pub fn new(secret: &str, issuer: &str, audience: &str) -> Self {
+        let config = Arc::new(AuthConfig::new(secret, issuer, audience));
         Auth { config }
     }
     pub fn authenticate(&self, token: &str) -> Result<Identity, AuthError> {

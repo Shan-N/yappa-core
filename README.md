@@ -1,175 +1,449 @@
-# Yappa-RT ⚡
+# Yappa-RT
 
-**High-throughput, multi-tenant real-time infrastructure. Built in Rust. Built to scale.**
+**Production-grade, multi-tenant real-time WebSocket messaging infrastructure.**
 
-DMs. Groups. Communities.
-Cross-node fanout via Redis.
-Durability via Kafka.
-Truth in Postgres.
-
-Zero magic. Just systems.
+Yappa-RT is a horizontally scalable WebSocket server designed for SaaS applications requiring real-time messaging. It supports direct messages (DM), group chats, and community channels with complete tenant isolation.
 
 ---
 
-## The Problem
+## Features
 
-Real-time infra is either:
-
-* 🐢 Slow
-* 💥 Not durable
-* 🧵 Impossible to scale cleanly
-* 🔓 Not multi-tenant safe
-
-We didn’t want another toy chat server.
-
-So we built infrastructure.
-
----
-
-## The Stack (Deliberate Choices Only)
-
-* Rust
-* Axum
-* Tokio
-* Redis (Pub/Sub fanout)
-* Kafka (event durability)
-* PostgreSQL (source of truth)
-* DashMap (lock-efficient routing)
-* JWT (auth at handshake)
-
-No ORM bloat.
-No hidden abstractions.
-No “we’ll fix it later” architecture.
+- **Multi-tenant by design** — Complete isolation between tenants with configurable user limits
+- **Horizontal scalability** — Stateless servers with Redis pub/sub for cross-node messaging
+- **JWT authentication** — Short-lived access tokens with refresh token rotation
+- **Durable persistence** — Kafka-backed message storage with PostgreSQL
+- **10 users/tenant limit** — Redis-backed atomic enforcement across all nodes
+- **Optional Kafka** — Demo mode writes directly to PostgreSQL for simpler deployments
 
 ---
 
 ## Architecture
 
-![Architecture](images/arch.png)
+```
+                    ┌─────────────────────┐
+                    │    Load Balancer    │
+                    └──────────┬──────────┘
+                               │
+         ┌─────────────────────┼─────────────────────┐
+         ▼                     ▼                     ▼
+   ┌───────────┐         ┌───────────┐         ┌───────────┐
+   │  WS Node  │         │  WS Node  │         │  WS Node  │
+   │ (Axum/    │         │ (Axum/    │         │ (Axum/    │
+   │  Tokio)   │         │  Tokio)   │         │  Tokio)   │
+   └─────┬─────┘         └─────┬─────┘         └─────┬─────┘
+         │                     │                     │
+         └─────────────────────┼─────────────────────┘
+                               │
+    ┌──────────────────────────┼──────────────────────────┐
+    │                          │                          │
+    ▼                          ▼                          ▼
+┌────────┐              ┌────────────┐              ┌────────────┐
+│ Redis  │              │   Kafka    │              │ PostgreSQL │
+│Pub/Sub │              │ (optional) │              │            │
+└────────┘              └────────────┘              └────────────┘
+```
 
-### What this means
+### Components
 
-* ⚡ Sub-RTT delivery across nodes
-* 📦 Durable event streaming
-* 📈 Horizontal scaling by default
-* 🧠 In-memory routing for hot path
-* 🛡 Tenant isolation baked in
-
----
-
-## Multi-Tenant By Design
-
-Every single layer is scoped by `tenant_id`.
-
-Connections.
-Redis channels.
-Groups.
-Database rows.
-
-No accidental cross-tenant leakage. Ever.
-
-This is SaaS-ready infra.
-
----
-
-## Message Flow (Hot Path)
-
-**DM**
-
-* Client → Axum
-* Build canonical `ServerMessage`
-* Publish to `user:{tenant}:{recipient}`
-* Fanout via Redis
-* Append to Kafka
-* Batch insert to Postgres
-
-**Group**
-
-* User joins group
-* Publish to `group:{group_id}`
-* Registry fans out
-* Kafka persists
-
-Real-time delivery ≠ eventual durability.
-You get both.
+| Component | Tech | Purpose |
+|-----------|------|---------|
+| **yappa-rt** | Rust (Axum/Tokio) | WebSocket server, message routing, tenant limits |
+| **yappa-auth** | Node.js (Express) | User authentication, JWT issuance, refresh tokens |
+| **yappa-sdk** | TypeScript | Browser/Node.js client SDK with auto-reconnect |
+| **Redis** | Redis 7 | Pub/sub for cross-node messaging, tenant limits, refresh tokens |
+| **Kafka** | Kafka 3.7 | Durable message streaming (optional) |
+| **PostgreSQL** | Postgres 16 | User storage, message persistence |
 
 ---
 
-## Why Rust?
+## Quick Start
 
-Because:
+### Prerequisites
 
-* No GC latency spikes
-* Predictable memory
-* High concurrency
-* True async performance
-* Production-grade reliability
+- Docker 24.0+
+- Docker Compose 2.20+
 
-If you're building infra, you optimize for tail latency — not developer comfort.
+### 1. Clone Repositories
+
+```bash
+mkdir yappa && cd yappa
+git clone https://github.com/your-org/realtime-ws.git
+git clone https://github.com/your-org/yappa-auth.git
+git clone https://github.com/your-org/yappa-sdk.git
+```
+
+### 2. Create Environment File
+
+```bash
+cat > .env << 'EOF'
+# Security (CHANGE THESE!)
+JWT_SECRET=change-me-to-32-random-characters-minimum
+JWT_ISSUER=yappa-rt
+JWT_AUDIENCE=realtime
+
+# Deployment Mode
+PERSISTENCE_MODE=direct
+
+# Tenant Limits  
+MAX_USERS_PER_TENANT=10
+
+# CORS (your frontend origins)
+CORS_ORIGINS=http://localhost:3000,http://localhost:5173
+
+# Database (defaults work with docker-compose)
+DATABASE_URL=postgres://realtime:realtime@postgres:5432/realtime
+REDIS_URL=redis://redis:6379
+EOF
+```
+
+### 3. Start Services
+
+```bash
+docker-compose up -d
+```
+
+### 4. Create a User
+
+```bash
+curl -X POST http://localhost:3001/api/register \
+  -H "Content-Type: application/json" \
+  -d '{"tenant_id":"demo","user_id":"alice","password":"secret123"}'
+```
+
+### 5. Login
+
+```bash
+curl -X POST http://localhost:3001/api/login \
+  -H "Content-Type: application/json" \
+  -d '{"tenant_id":"demo","user_id":"alice","password":"secret123"}'
+# Response: {"access_token":"eyJ...","token_type":"Bearer","expires_in":300}
+```
+
+### 6. Connect with SDK
+
+```javascript
+import { RealtimeClient } from '@yappa-rs/yappa-sdk';
+
+const client = new RealtimeClient({
+  url: 'ws://localhost:8080/ws',
+  token: 'your-access-token',
+});
+
+client.on('message', (msg) => console.log(msg));
+await client.connect();
+client.sendDM('bob', 'Hello!');
+```
 
 ---
 
-## Scaling Model
+## Message Types
 
-Spin up N instances behind a load balancer.
+### Direct Messages (DM)
 
-Each node:
+1:1 private messaging between two users.
 
-* Maintains local in-memory connections
-* Subscribes to Redis patterns
-* Produces to Kafka independently
+```javascript
+client.sendDM('user_id', 'Hello!');
+```
 
-Add nodes. Throughput increases.
-No shared memory. No coordination bottlenecks.
+### Group Messages
 
-That’s the point.
+Small group chats with explicit membership. Users must join before sending.
 
----
+```javascript
+client.createGroup('group-id');
+client.joinGroup('group-id');
+client.sendGroupMessage('group-id', 'Hello group!');
+client.leaveGroup('group-id');
+```
 
-## Storage Strategy
+### Community
 
-Kafka consumer:
-
-* Batches 500 messages / 250ms
-* Bulk `UNNEST` inserts
-* Indexed for tenant + conversation queries
-
-Write-heavy optimized.
-Read-friendly schema.
-
-We don’t fear scale.
+Broadcast channels (same as groups, different semantics for your application).
 
 ---
 
-## Benchmarks
+## Authentication Flow
 
-Includes:
+```
+┌─────────┐     ┌─────────────┐     ┌──────────┐
+│  User   │────▶│ yappa-auth  │────▶│  Redis   │
+└─────────┘     └─────────────┘     │ Postgres │
+     │                │             └──────────┘
+     │   access_token (5min)
+     │   refresh_token (7d, HTTP-only cookie)
+     │
+     ▼
+┌─────────┐     ┌─────────────┐
+│   SDK   │────▶│  yappa-rt   │
+└─────────┘     └─────────────┘
+     │                │
+     │  WebSocket + JWT
+     │                │
+     │                ▼
+     │          Validated
+     │          (stateless)
+     │
+     ▼
+  Connected
+```
 
-* k6 load test suite
-* Rust stress client
-
-Because “it works locally” isn’t a strategy.
+1. User logs in via `/api/login` with tenant_id, user_id, password
+2. Auth service returns short-lived JWT (5 min) + sets HTTP-only refresh cookie
+3. SDK connects to WebSocket with JWT in Authorization header
+4. Server validates JWT statelessly (no DB lookup)
+5. SDK auto-refreshes token before expiry
 
 ---
 
-## Who This Is For
+## Tenant Limits
 
-* SaaS products
-* Community platforms
-* Marketplaces
-* Internal enterprise tooling
-* Startups that don’t want to rewrite infra at 10k concurrent users
+The system enforces a maximum number of concurrent users per tenant:
 
----
-
-## Vision
-
-Messaging shouldn’t be your bottleneck.
-It should be your leverage.
-
-We’re building the real-time layer modern products deserve.
+- Configured via `MAX_USERS_PER_TENANT` (default: 10)
+- Uses Redis SET + atomic Lua scripts
+- Works across multiple nodes (not just single-instance)
+- User can have multiple connections (multi-device)
+- Returns HTTP 429 when limit reached
 
 ---
 
-MIT. Fork it. Break it. Scale it.
+## Deployment Modes
 
+### Demo Mode (`PERSISTENCE_MODE=direct`)
+
+- Messages written directly to PostgreSQL
+- No Kafka required
+- Simpler setup, fewer resources
+- Best for: Demos, development, low-traffic deployments
+
+### Production Mode (`PERSISTENCE_MODE=kafka`)
+
+- Messages go through Kafka for durability
+- Supports message replay
+- Higher throughput
+- Best for: Production, horizontal scaling, compliance requirements
+
+---
+
+## API Reference
+
+### Auth Service (yappa-auth)
+
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/health` | GET | Health check |
+| `/api/register` | POST | Create user. Body: `{tenant_id, user_id, password, display_name?}` |
+| `/api/login` | POST | Login. Returns access token + sets refresh cookie |
+| `/api/refresh` | POST | Refresh access token (uses cookie) |
+| `/api/logout` | POST | Revoke refresh token |
+
+### Realtime Server (yappa-rt)
+
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/health` | GET | Health check |
+| `/ws` | GET | WebSocket upgrade. Requires `Authorization: Bearer <token>` |
+
+### WebSocket Protocol
+
+**Client → Server:**
+
+```json
+// DM
+{"channel_type":"DM","user_id":"recipient","content":"Hello"}
+
+// Group join
+{"msg_type":"JOIN","tenant_id":"demo","group_id":"general","user_id":"alice"}
+
+// Group message
+{"channel_type":"GROUP","user_id":"group-id","content":"Hello group"}
+```
+
+**Server → Client:**
+
+```json
+{
+  "type": "chat",
+  "message_id": "uuid",
+  "tenant_id": "demo",
+  "channel_type": "DM",
+  "channel_id": "recipient",
+  "sender_id": "alice",
+  "timestamp": 1700000000,
+  "conversation_id": "uuid",
+  "payload": {"text": "Hello", "meta": {}}
+}
+```
+
+---
+
+## SDK Reference
+
+### Installation
+
+```bash
+npm install @yappa-rs/yappa-sdk
+```
+
+### Configuration Options
+
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| `url` | string | required | WebSocket URL (`ws://` or `wss://`) |
+| `token` | string | required | JWT access token |
+| `authMode` | `"header" \| "query"` | `"header"` | How to send token |
+| `refreshUrl` | string | — | URL for token refresh |
+| `reconnect` | boolean | true | Auto-reconnect on disconnect |
+| `maxReconnectAttempts` | number | Infinity | Max reconnect tries |
+| `dedup` | boolean | true | Deduplicate messages |
+| `logLevel` | `"debug" \| "info" \| "warn" \| "error" \| "silent"` | `"warn"` | Logging level |
+| `heartbeatTimeout` | number | 35000 | Disconnect after no activity (ms) |
+
+### Events
+
+| Event | Args | Description |
+|-------|------|-------------|
+| `connected` | — | Connection established |
+| `disconnected` | `reason: string` | Connection lost |
+| `reconnecting` | `attempt: number` | Reconnecting attempt |
+| `reconnected` | — | Reconnection successful |
+| `message` | `ServerMessage` | Any message |
+| `dm` | `ServerMessage` | Direct message |
+| `group_message` | `ServerMessage` | Group message |
+| `group_join` | `ServerMessage` | User joined group |
+| `error` | `RealtimeError` | Error occurred |
+
+---
+
+## Security
+
+### What We Handle
+
+- JWT with pinned HS256 algorithm
+- Issuer (`iss`) and audience (`aud`) validation
+- Short-lived access tokens (5 min default)
+- HTTP-only, Secure, SameSite refresh cookies
+- Tenant isolation at every layer
+- CORS configuration required (no wildcard in production)
+
+### What You Must Handle
+
+- Generate a strong `JWT_SECRET` (32+ random characters)
+- Enable HTTPS/WSS in production
+- Configure `CORS_ORIGINS` properly
+- Secure your PostgreSQL and Redis instances
+- Keep dependencies updated
+
+---
+
+## Configuration
+
+### Environment Variables
+
+| Variable | Required | Default | Description |
+|----------|----------|---------|-------------|
+| `JWT_SECRET` | **Yes** | — | JWT signing secret (32+ chars) |
+| `JWT_ISSUER` | No | `yappa-rt` | JWT issuer |
+| `JWT_AUDIENCE` | No | `realtime` | JWT audience |
+| `REDIS_URL` | **Yes** | — | Redis connection URL |
+| `DATABASE_URL` | **Yes** | — | PostgreSQL connection URL |
+| `KAFKA_BROKERS` | Conditional | — | Kafka brokers (required if `PERSISTENCE_MODE=kafka`) |
+| `PERSISTENCE_MODE` | No | `kafka` | `direct` or `kafka` |
+| `CORS_ORIGINS` | **Yes** | — | Comma-separated allowed origins |
+| `MAX_USERS_PER_TENANT` | No | `10` | Max concurrent users per tenant |
+| `PORT` | No | `8080` | Server port |
+
+---
+
+## Development
+
+### Build Realtime Server
+
+```bash
+cd realtime-ws
+cargo build --release
+```
+
+### Build Auth Service
+
+```bash
+cd yappa-auth
+npm install
+npm start
+```
+
+### Build SDK
+
+```bash
+cd yappa-sdk
+npm install
+npm run build
+```
+
+### Run Tests
+
+```bash
+# Server
+cd realtime-ws && cargo test
+
+# SDK
+cd yappa-sdk && npm test
+```
+
+---
+
+## Project Structure
+
+```
+yappa/
+├── realtime-ws/           # Rust WebSocket server
+│   ├── src/
+│   │   ├── main.rs        # Entry point
+│   │   ├── app.rs         # App wiring, server startup
+│   │   ├── auth/          # JWT authentication
+│   │   ├── connection/    # Connection registry
+│   │   ├── db/            # Database operations
+│   │   ├── kafka/         # Kafka producer/consumer
+│   │   ├── limits/        # Tenant limiter (Redis)
+│   │   ├── protocol/      # Message types
+│   │   ├── redis/         # Redis manager
+│   │   └── server/        # HTTP/WS handlers
+│   ├── migrations/        # SQL migrations
+│   └── Cargo.toml
+│
+├── yappa-auth/            # Node.js auth service
+│   ├── src/
+│   │   └── index.js       # Auth API
+│   └── package.json
+│
+└── yappa-sdk/             # TypeScript SDK
+    ├── src/
+    │   ├── client.ts      # Main client
+    │   ├── transport.ts   # WebSocket transport
+    │   └── ...
+    └── package.json
+```
+
+---
+
+## License
+
+MIT
+
+---
+
+## Contributing
+
+1. Fork the repository
+2. Create a feature branch
+3. Make your changes
+4. Run tests
+5. Submit a pull request
+
+---
+
+## Support
+
+- GitHub Issues: [github.com/your-org/realtime-ws/issues](https://github.com/your-org/realtime-ws/issues)
+- Documentation: [docs/](./docs/)

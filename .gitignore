@@ -1,7 +1,44 @@
-/target
-.DS_Store
+# Environment files
 .env
-CODE_SUMMARY.md
+.env.local
+.env.*.local
+
+# Build artifacts
+/target/
+/dist/
+/docs
 /bench
-/docs/SDK_GUIDE.md
-.dockerignore
+/webui
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+logs/
+
+# Test artifacts
+coverage/
+.nyc_output/
+
+# Temporary files
+tmp/
+temp/
+*.tmp
+
+# Secrets (never commit!)
+secrets/
+certs/*.pem
+certs/*.key
+
+
+SUMMARY.md
+CODE_SUMMARY.md
