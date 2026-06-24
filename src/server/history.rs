@@ -4,7 +4,7 @@ use axum::{
     response::{IntoResponse, Json},
 };
 use serde::{Deserialize, Serialize};
-use sqlx::PgPool;
+use tracing::error;
 
 use crate::app::AppState;
 
@@ -37,56 +37,26 @@ pub async fn get_channel_history(
     Query(query): Query<HistoryQuery>,
     State(state): State<AppState>,
 ) -> impl IntoResponse {
-    let limit = query.limit.unwrap_or(50).min(100) as i64;
+    let limit = query.limit.unwrap_or(50).min(100);
 
-    let rows = match query.before {
-        Some(before_cursor) => {
-            sqlx::query_as!(
-                MessageRow,
-                r#"
-                SELECT message_id, channel_type, channel_id, sender_id, content as text, 
-                       EXTRACT(EPOCH FROM created_at)::bigint as timestamp, conversation_id::text as conversation_id
-                FROM messages
-                WHERE tenant_id = $1 
-                  AND channel_type = $2
-                  AND ((channel_type = 'Dm' AND channel_id = $3) 
-                       OR (channel_type != 'Dm' AND channel_id = $4))
-                  AND created_at < $5
-                ORDER BY created_at DESC
-                LIMIT $6
-                "#,
-                path.tenant_id,
-                path.channel_type,
-                path.channel_id,
-                path.channel_id,
-                before_cursor,
-                limit
-            )
-            .fetch_all(&state.db_pool)
-            .await
-        }
-        None => {
-            sqlx::query_as!(
-                MessageRow,
-                r#"
-                SELECT message_id, channel_type, channel_id, sender_id, content as text, 
-                       EXTRACT(EPOCH FROM created_at)::bigint as timestamp, conversation_id::text as conversation_id
-                FROM messages
-                WHERE tenant_id = $1 
-                  AND channel_type = $2
-                  AND channel_id = $3
-                ORDER BY created_at DESC
-                LIMIT $4
-                "#,
-                path.tenant_id,
-                path.channel_type,
-                path.channel_id,
-                limit
-            )
-            .fetch_all(&state.db_pool)
-            .await
-        }
-    };
+    let rows = sqlx::query_as::<_, MessageRow>(
+        r#"
+        SELECT message_id, channel_type, channel_id, sender_id, content as text, 
+               EXTRACT(EPOCH FROM created_at)::bigint as timestamp, conversation_id::text as conversation_id
+        FROM messages
+        WHERE tenant_id = $1 
+          AND channel_type = $2
+          AND channel_id = $3
+        ORDER BY created_at DESC
+        LIMIT $4
+        "#
+    )
+    .bind(&path.tenant_id)
+    .bind(&path.channel_type)
+    .bind(&path.channel_id)
+    .bind(limit as i64)
+    .fetch_all(&state.db_pool)
+    .await;
 
     match rows {
         Ok(messages) => {
@@ -105,7 +75,7 @@ pub async fn get_channel_history(
             (StatusCode::OK, Json(response)).into_response()
         }
         Err(e) => {
-            tracing::error!("Failed to fetch history: {}", e);
+            error!("Failed to fetch history: {}", e);
             (StatusCode::INTERNAL_SERVER_ERROR, Json(Vec::<MessageResponse>::new())).into_response()
         }
     }
