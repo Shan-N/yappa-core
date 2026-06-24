@@ -10,6 +10,7 @@ use tracing::{error, info, warn};
 
 use crate::connection::ConnectionRegistry;
 use crate::limits::TenantLimiter;
+use crate::server::history::get_channel_history;
 use crate::{
     auth::Auth,
     kafka::Kafka,
@@ -133,6 +134,10 @@ pub async fn run(cfg: AppConfig) {
     let router = Router::new()
         .route("/health", get(health))
         .route("/ws", get(ws_handler))
+        .route(
+            "/api/history/:tenant_id/:channel_type/:channel_id",
+            get(get_channel_history),
+        )
         .with_state(app_state)
         .layer(cors);
 

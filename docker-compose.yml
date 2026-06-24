@@ -1,13 +1,10 @@
 version: "3.9"
 
 services:
-  nginx:
-    image: nginx:1.25-alpine
+  webui:
+    build: ./yappa-ui
     ports:
       - "80:80"
-    volumes:
-      - ./nginx.conf:/etc/nginx/nginx.conf:ro
-      - ./webui/dist:/var/www/html:ro
     depends_on:
       auth:
         condition: service_healthy
