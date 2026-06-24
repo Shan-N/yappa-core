@@ -41,7 +41,7 @@ pub async fn get_channel_history(
 
     let rows = sqlx::query_as::<_, MessageRow>(
         r#"
-        SELECT message_id, channel_type, channel_id, sender_id, content as text, 
+        SELECT message_id::text, channel_type, channel_id, sender_id, content as text, 
                EXTRACT(EPOCH FROM created_at)::bigint as timestamp, conversation_id::text as conversation_id
         FROM messages
         WHERE tenant_id = $1 
