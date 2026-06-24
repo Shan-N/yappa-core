@@ -81,6 +81,10 @@ async fn handle_socket(socket: WebSocket, identity: Identity, app_state: AppStat
     let (tx, mut rx) = tokio::sync::mpsc::channel(CHANNEL_CAPACITY);
     app_state.registry.insert(&identity, connection_id, tx);
 
+    // Auto-join user to "general" group on connect
+    app_state.registry.join_group(&identity.tenant_id, "general", &identity.user_id);
+    info!("User {} auto-joined #general", identity.user_id);
+
     let identity_for_guard = identity.clone();
     let limiter = app_state.limiter.clone();
     let registry = app_state.registry.clone();
