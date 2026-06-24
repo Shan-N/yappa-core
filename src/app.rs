@@ -135,7 +135,7 @@ pub async fn run(cfg: AppConfig) {
         .route("/health", get(health))
         .route("/ws", get(ws_handler))
         .route(
-            "/api/history/:tenant_id/:channel_type/:channel_id",
+            "/api/history/{tenant_id}/{channel_type}/{channel_id}",
             get(get_channel_history),
         )
         .with_state(app_state)
