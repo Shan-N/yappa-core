@@ -224,9 +224,58 @@ async fn handle_text_message(text: &str, identity: &Identity, state: &AppState) 
                     &group_state.group_id,
                     &identity.user_id,
                 );
+                let server_msg = ServerMessage {
+                    msg_type: "group_leave".to_string(),
+                    message_id: Uuid::new_v4(),
+                    tenant_id: identity.tenant_id.clone(),
+                    channel_id: group_state.group_id.clone(),
+                    channel_type: ChannelType::Group,
+                    sender_id: identity.user_id.clone(),
+                    timestamp: std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .unwrap()
+                        .as_secs(),
+                    conversation_id: group_state
+                        .group_id
+                        .parse::<Uuid>()
+                        .unwrap_or_else(|_| Uuid::new_v4()),
+                    payload: MessagePayload {
+                        text: format!("{} has left the group", identity.user_id),
+                        meta: serde_json::json!({}),
+                    },
+                };
+                if let Err(e) = state.pubsub.publish_grp(&group_state.group_id, &server_msg).await {
+                    error!("Redis publish failed: {}", e);
+                }
             }
             GroupMessageType::Create => {
                 state.registry.create_group(&identity.tenant_id, &group_state.group_id);
+                // Auto-join creator to the group
+                state.registry.join_group(&identity.tenant_id, &group_state.group_id, &identity.user_id);
+                let server_msg = ServerMessage {
+                    msg_type: "group_created".to_string(),
+                    message_id: Uuid::new_v4(),
+                    tenant_id: identity.tenant_id.clone(),
+                    channel_id: group_state.group_id.clone(),
+                    channel_type: ChannelType::Group,
+                    sender_id: identity.user_id.clone(),
+                    timestamp: std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .unwrap()
+                        .as_secs(),
+                    conversation_id: group_state
+                        .group_id
+                        .parse::<Uuid>()
+                        .unwrap_or_else(|_| Uuid::new_v4()),
+                    payload: MessagePayload {
+                        text: format!("Group {} created by {}", group_state.group_id, identity.user_id),
+                        meta: serde_json::json!({}),
+                    },
+                };
+                // Broadcast to the whole tenant so everyone knows about the new group
+                if let Err(e) = state.pubsub.publish_grp(&group_state.group_id, &server_msg).await {
+                    error!("Redis publish failed: {}", e);
+                }
             }
             GroupMessageType::Delete => {
                 state.registry.delete_group(&identity.tenant_id, &group_state.group_id);
@@ -264,8 +313,13 @@ async fn handle_text_message(text: &str, identity: &Identity, state: &AppState) 
                 };
                 info!("Received message to user {}: {}", payload.user_id, payload.content);
 
+                // Publish to recipient
                 if let Err(e) = state.pubsub.publish(&payload.user_id, &server_msg).await {
                     error!("Redis publish failed: {}", e);
+                }
+                // Also echo back to sender so they see their own message
+                if let Err(e) = state.pubsub.publish(&identity.user_id, &server_msg).await {
+                    error!("Redis publish to sender failed: {}", e);
                 }
 
                 persist_message(state, &server_msg).await;
