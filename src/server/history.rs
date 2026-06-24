@@ -4,7 +4,7 @@ use axum::{
     response::{IntoResponse, Json},
 };
 use serde::{Deserialize, Serialize};
-use tracing::error;
+use tracing::{error, info};
 
 use crate::app::AppState;
 
@@ -72,6 +72,7 @@ pub async fn get_channel_history(
                     conversation_id: m.conversation_id,
                 })
                 .collect();
+            info!("Fetched {} messages for channel {}/{}/{}", response.len(), path.tenant_id, path.channel_type, path.channel_id);
             (StatusCode::OK, Json(response)).into_response()
         }
         Err(e) => {
