@@ -193,6 +193,28 @@ async fn handle_text_message(text: &str, identity: &Identity, state: &AppState) 
     if let Ok(group_state) = serde_json::from_str::<GroupMessage>(text) {
         match group_state.msg_type {
             GroupMessageType::Join => {
+                let conversation_id = group_state
+                    .group_id
+                    .parse::<Uuid>()
+                    .unwrap_or_else(|_| Uuid::new_v4());
+
+                let result = sqlx::query(
+                    r#"
+                    INSERT INTO group_members (conversation_id, tenant_id, user_id)
+                    VALUES ($1, $2, $3)
+                    ON CONFLICT (conversation_id, user_id) DO NOTHING
+                    "#
+                )
+                .bind(conversation_id)
+                .bind(&identity.tenant_id)
+                .bind(&identity.user_id)
+                .execute(&state.db_pool)
+                .await;
+
+                if let Err(e) = result {
+                    error!("Failed to add group member to database: {}", e);
+                }
+
                 state.registry.join_group(
                     &identity.tenant_id,
                     &group_state.group_id,
@@ -209,10 +231,7 @@ async fn handle_text_message(text: &str, identity: &Identity, state: &AppState) 
                         .duration_since(std::time::UNIX_EPOCH)
                         .unwrap()
                         .as_secs(),
-                    conversation_id: group_state
-                        .group_id
-                        .parse::<Uuid>()
-                        .unwrap_or_else(|_| Uuid::new_v4()),
+                    conversation_id,
                     payload: MessagePayload {
                         text: format!("{} has joined the group", identity.user_id),
                         meta: serde_json::json!({}),
@@ -223,6 +242,23 @@ async fn handle_text_message(text: &str, identity: &Identity, state: &AppState) 
                 }
             }
             GroupMessageType::Leave => {
+                let conversation_id = group_state
+                    .group_id
+                    .parse::<Uuid>()
+                    .unwrap_or_else(|_| Uuid::new_v4());
+
+                let result = sqlx::query(
+                    "DELETE FROM group_members WHERE conversation_id = $1 AND user_id = $2"
+                )
+                .bind(conversation_id)
+                .bind(&identity.user_id)
+                .execute(&state.db_pool)
+                .await;
+
+                if let Err(e) = result {
+                    error!("Failed to remove group member from database: {}", e);
+                }
+
                 state.registry.leave_group(
                     &identity.tenant_id,
                     &group_state.group_id,
@@ -239,10 +275,7 @@ async fn handle_text_message(text: &str, identity: &Identity, state: &AppState) 
                         .duration_since(std::time::UNIX_EPOCH)
                         .unwrap()
                         .as_secs(),
-                    conversation_id: group_state
-                        .group_id
-                        .parse::<Uuid>()
-                        .unwrap_or_else(|_| Uuid::new_v4()),
+                    conversation_id,
                     payload: MessagePayload {
                         text: format!("{} has left the group", identity.user_id),
                         meta: serde_json::json!({}),
@@ -253,8 +286,47 @@ async fn handle_text_message(text: &str, identity: &Identity, state: &AppState) 
                 }
             }
             GroupMessageType::Create => {
+                let conversation_id = group_state
+                    .group_id
+                    .parse::<Uuid>()
+                    .unwrap_or_else(|_| Uuid::new_v4());
+                
+                let result = sqlx::query(
+                    r#"
+                    INSERT INTO groups (conversation_id, tenant_id, name, created_by)
+                    VALUES ($1, $2, $3, $4)
+                    ON CONFLICT (tenant_id, name) DO NOTHING
+                    "#
+                )
+                .bind(conversation_id)
+                .bind(&identity.tenant_id)
+                .bind(&group_state.group_id)
+                .bind(&identity.user_id)
+                .execute(&state.db_pool)
+                .await;
+
+                if let Err(e) = result {
+                    error!("Failed to insert group to database: {}", e);
+                }
+
+                let result = sqlx::query(
+                    r#"
+                    INSERT INTO group_members (conversation_id, tenant_id, user_id)
+                    VALUES ($1, $2, $3)
+                    ON CONFLICT (conversation_id, user_id) DO NOTHING
+                    "#
+                )
+                .bind(conversation_id)
+                .bind(&identity.tenant_id)
+                .bind(&identity.user_id)
+                .execute(&state.db_pool)
+                .await;
+
+                if let Err(e) = result {
+                    error!("Failed to add creator to group_members: {}", e);
+                }
+
                 state.registry.create_group(&identity.tenant_id, &group_state.group_id);
-                // Auto-join creator to the group
                 state.registry.join_group(&identity.tenant_id, &group_state.group_id, &identity.user_id);
                 let server_msg = ServerMessage {
                     msg_type: "group_created".to_string(),
@@ -267,16 +339,12 @@ async fn handle_text_message(text: &str, identity: &Identity, state: &AppState) 
                         .duration_since(std::time::UNIX_EPOCH)
                         .unwrap()
                         .as_secs(),
-                    conversation_id: group_state
-                        .group_id
-                        .parse::<Uuid>()
-                        .unwrap_or_else(|_| Uuid::new_v4()),
+                    conversation_id,
                     payload: MessagePayload {
                         text: format!("Group {} created by {}", group_state.group_id, identity.user_id),
                         meta: serde_json::json!({}),
                     },
                 };
-                // Broadcast to the whole tenant so everyone knows about the new group
                 if let Err(e) = state.pubsub.publish_grp(&group_state.group_id, &server_msg).await {
                     error!("Redis publish failed: {}", e);
                 }
