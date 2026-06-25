@@ -28,21 +28,10 @@ SELECT DISTINCT
     (ARRAY_AGG(sender_id ORDER BY created_at ASC))[1] as created_by,
     MIN(created_at) as created_at
 FROM messages
-WHERE channel_type = 'Group' OR channel_type = 'group'
+WHERE channel_type ILIKE 'group'
+  AND NOT EXISTS (SELECT 1 FROM groups WHERE groups.conversation_id = messages.conversation_id)
 GROUP BY conversation_id, tenant_id, channel_id
-ON CONFLICT (conversation_id) DO NOTHING;
-
-INSERT INTO groups (conversation_id, tenant_id, name, created_by, created_at)
-SELECT DISTINCT 
-    conversation_id,
-    tenant_id,
-    channel_id as name,
-    (ARRAY_AGG(sender_id ORDER BY created_at ASC))[1] as created_by,
-    MIN(created_at) as created_at
-FROM messages
-WHERE channel_type = 'Group' OR channel_type = 'group'
-GROUP BY conversation_id, tenant_id, channel_id
-ON CONFLICT (tenant_id, name) DO NOTHING;
+HAVING conversation_id IS NOT NULL;
 
 INSERT INTO group_members (conversation_id, tenant_id, user_id, joined_at)
 SELECT DISTINCT 
@@ -51,7 +40,10 @@ SELECT DISTINCT
     m.sender_id as user_id,
     MIN(m.created_at) as joined_at
 FROM messages m
-WHERE (m.channel_type = 'Group' OR m.channel_type = 'group')
+WHERE m.channel_type ILIKE 'group'
   AND m.conversation_id IN (SELECT conversation_id FROM groups)
-GROUP BY m.conversation_id, m.tenant_id, m.sender_id
-ON CONFLICT (conversation_id, user_id) DO NOTHING;
+  AND NOT EXISTS (
+      SELECT 1 FROM group_members gm 
+      WHERE gm.conversation_id = m.conversation_id AND gm.user_id = m.sender_id
+  )
+GROUP BY m.conversation_id, m.tenant_id, m.sender_id;
