@@ -49,7 +49,7 @@ pub async fn ws_handler(
 
     let token = auth_header
         .and_then(|h| h.strip_prefix("Bearer "))
-        .or_else(|| query_params.get("token").map(|s| *s));
+        .or_else(|| query_params.get("token").copied());
 
     let token = match token {
         Some(t) => t,

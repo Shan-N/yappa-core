@@ -38,8 +38,11 @@ pub async fn get_channel_history(
     State(state): State<AppState>,
 ) -> impl IntoResponse {
     let limit = query.limit.unwrap_or(50).min(100);
+    let before_clause = query.before.as_ref().map_or(String::new(), |b| {
+        format!("AND created_at < to_timestamp({})", b)
+    });
 
-    let rows = sqlx::query_as::<_, MessageRow>(
+    let sql = format!(
         r#"
         SELECT message_id::text, channel_type, channel_id, sender_id, content as text, 
                EXTRACT(EPOCH FROM created_at)::bigint as timestamp, conversation_id::text as conversation_id
@@ -47,16 +50,20 @@ pub async fn get_channel_history(
         WHERE tenant_id = $1 
           AND channel_type = $2
           AND channel_id = $3
+          {}
         ORDER BY created_at DESC
         LIMIT $4
-        "#
-    )
-    .bind(&path.tenant_id)
-    .bind(&path.channel_type)
-    .bind(&path.channel_id)
-    .bind(limit as i64)
-    .fetch_all(&state.db_pool)
-    .await;
+        "#,
+        before_clause
+    );
+
+    let rows = sqlx::query_as::<_, MessageRow>(&sql)
+        .bind(&path.tenant_id)
+        .bind(&path.channel_type)
+        .bind(&path.channel_id)
+        .bind(limit as i64)
+        .fetch_all(&state.db_pool)
+        .await;
 
     match rows {
         Ok(messages) => {
@@ -72,7 +79,6 @@ pub async fn get_channel_history(
                     conversation_id: m.conversation_id,
                 })
                 .collect();
-            info!("response: {:?}", response);
             info!("Fetched {} messages for channel {}/{}/{}", response.len(), path.tenant_id, path.channel_type, path.channel_id);
             (StatusCode::OK, Json(response)).into_response()
         }

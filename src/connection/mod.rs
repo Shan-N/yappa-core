@@ -33,9 +33,9 @@ impl ConnectionRegistry {
     pub fn insert(&self, identity: &Identity, connection_id: ConnectionId, sender: SocketSender) {
         self.inner
             .entry(identity.tenant_id.clone())
-            .or_insert_with(DashMap::new)
+            .or_default()
             .entry(identity.user_id.clone())
-            .or_insert_with(DashMap::new)
+            .or_default()
             .insert(connection_id, sender);
         tracing::info!(
             "Registered connection: tenant_id={}, user_id={}",
@@ -47,7 +47,7 @@ impl ConnectionRegistry {
     pub fn join_group(&self, tenant_id: &str, group_id: &str, user_id: &str) {
         self.groups
             .entry(tenant_id.to_string())
-            .or_insert_with(DashMap::new)
+            .or_default()
             .entry(group_id.to_string())
             .or_default()
             .insert(user_id.to_string());
@@ -75,7 +75,7 @@ impl ConnectionRegistry {
     pub fn create_group(&self, tenant_id: &str, group_id: &str) {
         self.groups
             .entry(tenant_id.to_string())
-            .or_insert_with(DashMap::new)
+            .or_default()
             .entry(group_id.to_string())
             .or_default();
         tracing::info!("Group {} created in tenant {}", group_id, tenant_id);

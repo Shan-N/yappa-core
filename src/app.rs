@@ -10,6 +10,7 @@ use tracing::{error, info, warn};
 
 use crate::connection::ConnectionRegistry;
 use crate::limits::TenantLimiter;
+use crate::server::groups::get_tenant_groups;
 use crate::server::history::get_channel_history;
 use crate::{
     auth::Auth,
@@ -82,6 +83,14 @@ pub async fn run(cfg: AppConfig) {
         .execute(&pool)
         .await
         .expect("Failed to run messages migration");
+    sqlx::raw_sql(include_str!("../migrations/002_create_api_key.sql"))
+        .execute(&pool)
+        .await
+        .expect("Failed to run api_keys migration");
+    sqlx::raw_sql(include_str!("../migrations/003_create_groups.sql"))
+        .execute(&pool)
+        .await
+        .expect("Failed to run groups migration");
     info!("Database migrations applied successfully");
 
     let redis_client = Client::open(cfg.redis_url.clone()).expect("invalid REDIS_URL");
@@ -137,6 +146,10 @@ pub async fn run(cfg: AppConfig) {
         .route(
             "/api/history/{tenant_id}/{channel_type}/{channel_id}",
             get(get_channel_history),
+        )
+        .route(
+            "/api/groups/{tenant_id}",
+            get(get_tenant_groups),
         )
         .with_state(app_state)
         .layer(cors);
