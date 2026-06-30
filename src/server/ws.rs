@@ -194,10 +194,24 @@ async fn handle_text_message(text: &str, identity: &Identity, state: &AppState) 
     if let Ok(group_state) = serde_json::from_str::<GroupMessage>(text) {
         match group_state.msg_type {
             GroupMessageType::Join => {
-                let conversation_id = group_state
-                    .group_id
-                    .parse::<Uuid>()
-                    .unwrap_or_else(|_| Uuid::new_v4());
+                let result = sqlx::query(
+                    r#"
+                    SELECT conversation_id FROM groups 
+                    WHERE tenant_id = $1 AND name = $2
+                    "#
+                )
+                .bind(&identity.tenant_id)
+                .bind(&group_state.group_id)
+                .fetch_one(&state.db_pool)
+                .await;
+
+                let conversation_id = match result {
+                    Ok(row) => row.get::<Uuid, _>("conversation_id"),
+                    Err(e) => {
+                        error!("Failed to find group {}: {}", group_state.group_id, e);
+                        return;
+                    }
+                };
 
                 let result = sqlx::query(
                     r#"

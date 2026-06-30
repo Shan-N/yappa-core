@@ -3,10 +3,17 @@ CREATE TABLE IF NOT EXISTS groups (
     tenant_id       TEXT NOT NULL,
     name            TEXT NOT NULL,
     created_by      TEXT NOT NULL,
-    created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    
-    UNIQUE (tenant_id, name)
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
+
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint WHERE conname = 'groups_tenant_id_name_key'
+    ) THEN
+        ALTER TABLE groups ADD CONSTRAINT groups_tenant_id_name_key UNIQUE (tenant_id, name);
+    END IF;
+END $$;
 
 CREATE TABLE IF NOT EXISTS group_members (
     conversation_id UUID NOT NULL REFERENCES groups(conversation_id) ON DELETE CASCADE,
