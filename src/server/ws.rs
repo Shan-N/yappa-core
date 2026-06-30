@@ -4,6 +4,7 @@ use axum::{
     response::{IntoResponse, Response},
 };
 use futures::{sink::SinkExt, stream::StreamExt};
+use sqlx::Row;
 use std::time::Duration;
 use tracing::{error, info, warn};
 use uuid::Uuid;
@@ -295,19 +296,24 @@ async fn handle_text_message(text: &str, identity: &Identity, state: &AppState) 
                     r#"
                     INSERT INTO groups (conversation_id, tenant_id, name, created_by)
                     VALUES ($1, $2, $3, $4)
-                    ON CONFLICT (tenant_id, name) DO NOTHING
+                    ON CONFLICT (tenant_id, name) DO UPDATE SET conversation_id = EXCLUDED.conversation_id
+                    RETURNING conversation_id
                     "#
                 )
                 .bind(conversation_id)
                 .bind(&identity.tenant_id)
                 .bind(&group_state.group_id)
                 .bind(&identity.user_id)
-                .execute(&state.db_pool)
+                .fetch_one(&state.db_pool)
                 .await;
 
-                if let Err(e) = result {
-                    error!("Failed to insert group to database: {}", e);
-                }
+                let conversation_id = match result {
+                    Ok(row) => row.get::<Uuid, _>("conversation_id"),
+                    Err(e) => {
+                        error!("Failed to insert group to database: {}", e);
+                        return;
+                    }
+                };
 
                 let result = sqlx::query(
                     r#"
