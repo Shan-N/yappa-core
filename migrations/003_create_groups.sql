@@ -40,9 +40,10 @@ SELECT DISTINCT
     MIN(created_at) as created_at
 FROM messages
 WHERE channel_type ILIKE 'group'
-  AND NOT EXISTS (SELECT 1 FROM groups WHERE groups.conversation_id = messages.conversation_id)
+  AND NOT EXISTS (SELECT 1 FROM groups WHERE groups.tenant_id = messages.tenant_id AND groups.name = messages.channel_id)
 GROUP BY conversation_id, tenant_id, channel_id
-HAVING conversation_id IS NOT NULL;
+HAVING conversation_id IS NOT NULL
+ON CONFLICT (tenant_id, name) DO NOTHING;
 
 INSERT INTO group_members (conversation_id, tenant_id, user_id, joined_at)
 SELECT DISTINCT 
