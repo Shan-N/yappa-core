@@ -8,9 +8,13 @@ CREATE TABLE IF NOT EXISTS groups (
 
 DO $$
 BEGIN
-    IF NOT EXISTS (
-        SELECT 1 FROM pg_constraint WHERE conname = 'groups_tenant_id_name_key'
-    ) THEN
+    IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'groups_tenant_id_name_key') THEN
+        DELETE FROM groups g
+        WHERE g.ctid NOT IN (
+            SELECT MIN(g2.ctid)
+            FROM groups g2
+            GROUP BY g2.tenant_id, g2.name
+        );
         ALTER TABLE groups ADD CONSTRAINT groups_tenant_id_name_key UNIQUE (tenant_id, name);
     END IF;
 END $$;
